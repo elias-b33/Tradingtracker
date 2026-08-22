@@ -19,6 +19,10 @@ may be left unset. Aether uses a local PGlite database and runs at
 
 ## Deploy to Vercel
 
+The Vercel project is connected directly to GitHub. Every push to `main`
+creates a versioned Production deployment; application secrets remain in
+Vercel's encrypted environment settings and are never committed.
+
 1. Create a PostgreSQL database, such as Neon, and copy its connection URL.
 2. Import this directory into Vercel.
 3. Add these Production environment variables:
