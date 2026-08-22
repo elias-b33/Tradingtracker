@@ -95,6 +95,7 @@ export function Header() {
         <button
           type="button"
           onClick={() => setSearchOpen(true)}
+          aria-label={`Find another ${venue === "stocks" ? "stock, ETF, or index" : "crypto pair"}. Current market ${pairLabel(symbol)}`}
           className="flex min-h-11 items-center gap-2 rounded-md px-2 hover:bg-elevated md:min-h-8"
         >
           <CoinIcon symbol={symbol} size={28} />
@@ -104,7 +105,7 @@ export function Header() {
               {(phone
                 ? [exchangeLabel(quote?.exchange), sourceLabel(quote?.source, venue)]
                 : [
-                    assetName(symbol),
+                    quote?.shortName || assetName(symbol),
                     exchangeLabel(quote?.exchange),
                     sourceLabel(quote?.source, venue),
                     quote?.source !== "binance" ? sessionLabel(quote?.marketState) : null,
@@ -117,6 +118,19 @@ export function Header() {
           <ChevronDown className="size-3.5 text-muted" />
         </button>
         <LivePrice symbol={symbol} />
+        <button
+          type="button"
+          onClick={() => setSearchOpen(true)}
+          className="hidden min-h-9 min-w-52 items-center gap-2 rounded-md border border-border bg-surface px-3 text-left text-sm text-muted hover:border-border-strong hover:text-fg lg:flex"
+        >
+          <Search className="size-4 text-subtle" aria-hidden />
+          <span className="truncate">
+            {venue === "stocks" ? "Search stocks, ETFs, indices" : "Search crypto markets"}
+          </span>
+          <kbd className="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-subtle">
+            Ctrl K
+          </kbd>
+        </button>
         <div className="ml-auto hidden md:block">
           <AccountSlot />
         </div>

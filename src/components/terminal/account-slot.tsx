@@ -39,6 +39,7 @@ export function AccountSlot() {
     return (
       <Link
         to="/login"
+        search={{ error: undefined }}
         title="Sync this desk across devices"
         className={cn(buttonVariants({ variant: "ghost", size: "xs" }), "shrink-0 text-accent")}
       >
@@ -120,7 +121,9 @@ export function AccountCard() {
           Sign in and this desk follows you.
         </p>
         <Button asChild size="sm" className="mt-2">
-          <Link to="/login">Sign in</Link>
+          <Link to="/login" search={{ error: undefined }}>
+            Sign in
+          </Link>
         </Button>
       </div>
     );

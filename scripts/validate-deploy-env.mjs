@@ -1,39 +1,72 @@
 #!/usr/bin/env node
 
-// Local builds can use PGlite. Hosted builds fail early with an actionable
-// configuration error instead of producing a function that crashes at runtime.
-if (process.env.VERCEL !== "1") process.exit(0);
+import { pathToFileURL } from "node:url";
 
-const env = (key) => process.env[key]?.trim();
-const missing = ["DATABASE_URL", "BETTER_AUTH_URL", "BETTER_AUTH_SECRET"].filter(
-  (key) => !env(key),
-);
+const value = (source, key) => source[key]?.trim() || undefined;
 
-if (missing.length > 0) {
-  throw new Error(`Missing required Vercel environment variables: ${missing.join(", ")}.`);
-}
-
-const databaseURL = new URL(env("DATABASE_URL"));
-if (!["postgres:", "postgresql:"].includes(databaseURL.protocol)) {
-  throw new Error("DATABASE_URL must use the postgres or postgresql protocol.");
-}
-
-const authURL = new URL(env("BETTER_AUTH_URL"));
-if (authURL.protocol !== "https:") {
-  throw new Error("BETTER_AUTH_URL must be an absolute HTTPS URL.");
-}
-
-if (env("BETTER_AUTH_SECRET").length < 32) {
-  throw new Error("BETTER_AUTH_SECRET must contain at least 32 characters.");
-}
-
-for (const [label, idKey, secretKey] of [
-  ["Google", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
-  ["X", "TWITTER_CLIENT_ID", "TWITTER_CLIENT_SECRET"],
-]) {
-  if (Boolean(env(idKey)) !== Boolean(env(secretKey))) {
-    throw new Error(`${label} OAuth requires both ${idKey} and ${secretKey}.`);
+function parseURL(raw, name) {
+  try {
+    return new URL(raw);
+  } catch {
+    throw new Error(`${name} must be an absolute URL.`);
   }
 }
 
-console.log("[config] Vercel environment is valid.");
+/** Validate the environment that Vercel will use for the hosted application. */
+export function validateDeployEnvironment(source = process.env) {
+  if (source.VERCEL !== "1") return { validated: false, googleEnabled: false };
+
+  const missing = ["DATABASE_URL", "BETTER_AUTH_URL", "BETTER_AUTH_SECRET"].filter(
+    (key) => !value(source, key),
+  );
+  if (missing.length > 0) {
+    throw new Error(`Missing required Vercel environment variables: ${missing.join(", ")}.`);
+  }
+
+  const databaseURL = parseURL(value(source, "DATABASE_URL"), "DATABASE_URL");
+  if (!["postgres:", "postgresql:"].includes(databaseURL.protocol)) {
+    throw new Error("DATABASE_URL must use the postgres or postgresql protocol.");
+  }
+
+  const authURL = parseURL(value(source, "BETTER_AUTH_URL"), "BETTER_AUTH_URL");
+  if (
+    authURL.protocol !== "https:" ||
+    authURL.username ||
+    authURL.password ||
+    authURL.pathname !== "/" ||
+    authURL.search ||
+    authURL.hash
+  ) {
+    throw new Error("BETTER_AUTH_URL must be an HTTPS origin without a path, query, or hash.");
+  }
+
+  if (value(source, "BETTER_AUTH_SECRET").length < 32) {
+    throw new Error("BETTER_AUTH_SECRET must contain at least 32 characters.");
+  }
+
+  const googleClientId = value(source, "GOOGLE_CLIENT_ID");
+  const googleClientSecret = value(source, "GOOGLE_CLIENT_SECRET");
+  if (Boolean(googleClientId) !== Boolean(googleClientSecret)) {
+    throw new Error("Google OAuth requires both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.");
+  }
+  if (googleClientId && !/^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(googleClientId)) {
+    throw new Error(
+      "GOOGLE_CLIENT_ID must be a Google OAuth web client ID ending in .apps.googleusercontent.com.",
+    );
+  }
+  if (googleClientSecret && googleClientSecret.length < 16) {
+    throw new Error("GOOGLE_CLIENT_SECRET appears incomplete.");
+  }
+
+  return { validated: true, googleEnabled: Boolean(googleClientId) };
+}
+
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  const result = validateDeployEnvironment();
+  if (result.validated) {
+    console.log(
+      `[config] Vercel environment is valid; Google sign-in is ${result.googleEnabled ? "enabled" : "disabled"}.`,
+    );
+  }
+}

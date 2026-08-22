@@ -30,15 +30,34 @@ Vercel's encrypted environment settings and are never committed.
    - `BETTER_AUTH_URL` set to the final HTTPS origin, with no path
    - `BETTER_AUTH_SECRET` set to a unique random value of at least 32 characters
 4. Optionally add `BETTER_AUTH_TRUSTED_ORIGINS` as a comma-separated list.
-5. Optionally configure Google or X sign-in. Each provider requires both values
-   from its pair in `.env.example`; incomplete pairs are rejected.
-6. Add either `FINNHUB_API_KEY` or the two Alpaca keys for a supported stock
-   quote feed. Without one, stock quotes fall back to Yahoo's public endpoint.
+5. Optionally configure Google sign-in using the instructions below. Google is
+   enabled only when both credentials are present; incomplete or malformed
+   credentials are rejected. Email/password remains available without Google.
+6. Add the two Alpaca keys for batch U.S. IEX snapshots, or `FINNHUB_API_KEY`
+   as a per-symbol fallback with cached company profiles/logos. Worldwide symbols continue to use Yahoo exchange
+   data, with provider timestamps and any declared exchange delay shown in-app.
+   The app still launches without an optional quote-provider key.
 7. Deploy. Vercel runs `npm run build`, validates the hosted configuration, and
    applies pending database migrations.
 
-The OAuth callback paths are `/api/auth/callback/google` and
-`/api/auth/callback/twitter`, appended to `BETTER_AUTH_URL`.
+### Enable Google sign-in
+
+1. In Google Cloud Console, configure the OAuth consent screen. While it is in
+   testing mode, add every account that should be able to sign in as a test user.
+2. Create an OAuth 2.0 Client ID with application type **Web application**.
+3. Add this authorized JavaScript origin exactly:
+   `https://tradingtracker.vercel.app`
+4. Add this authorized redirect URI exactly:
+   `https://tradingtracker.vercel.app/api/auth/callback/google`
+5. In the Vercel project's Production environment variables, add the client ID
+   as `GOOGLE_CLIENT_ID` and the client secret as `GOOGLE_CLIENT_SECRET`.
+6. Redeploy after saving the variables. The login page exposes the Google button
+   only when both variables pass validation.
+
+The callback is derived by Better Auth from `BETTER_AUTH_URL`; it is documented
+above for the Google Cloud allowlist and is not hardcoded in application logic.
+Apple sign-in is intentionally inactive, so no Apple Developer configuration is
+needed. Email/password sign-in remains enabled independently.
 
 ## Quality checks
 

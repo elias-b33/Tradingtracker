@@ -1,7 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { getDepth, getTrades } from "@/lib/market/binance";
-import { formatPct, formatPrice, formatQty, formatTime } from "@/lib/market/format";
-import { exchangeLabel, sessionLabel, sourceLabel } from "@/lib/market/venue";
+import {
+  formatCandleTime,
+  formatPct,
+  formatPrice,
+  formatQty,
+  formatTime,
+} from "@/lib/market/format";
+import {
+  chartTimeZone,
+  exchangeLabel,
+  quoteFeedStatus,
+  sessionLabel,
+  sourceLabel,
+} from "@/lib/market/venue";
 import { cn } from "@/lib/utils";
 import { useQuote, useTerminalStore } from "@/lib/store";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -79,24 +91,35 @@ function sessionCountdown(quote: NonNullable<ReturnType<typeof useQuote>>): stri
 function StockSession() {
   const symbol = useTerminalStore((s) => s.symbol);
   const quote = useQuote(symbol);
-  const state = quote?.marketState ?? "closed";
+  const state = quote?.marketState;
   const opts = quote ? { currency: quote.currency, hint: quote.priceHint } : undefined;
   const countdown = quote ? sessionCountdown(quote) : null;
+  const feedStatus = quote ? quoteFeedStatus(quote) : null;
+  const feedTone =
+    feedStatus?.freshness === "real-time" || feedStatus?.freshness === "recent"
+      ? "text-accent"
+      : feedStatus?.freshness === "stale"
+        ? "text-warn"
+        : "text-muted";
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4 text-sm">
       <p className="text-xs font-medium tracking-wide text-muted uppercase">Overview</p>
       <p className="text-fg">
-        {sessionLabel(state) || "Closed"}
+        {sessionLabel(state) || "Session status unavailable"}
         <span className="ml-2 text-xs text-muted">
-          {[exchangeLabel(quote?.exchange), sourceLabel(quote?.source, "stocks")].filter(Boolean).join(" · ")}
+          {[exchangeLabel(quote?.exchange), sourceLabel(quote?.source, "stocks", quote?.feed)]
+            .filter(Boolean)
+            .join(" · ")}
         </span>
       </p>
       {countdown ? <p className="text-xs text-muted">{countdown}</p> : null}
-      <p className="text-xs text-muted">
-        {quote?.source === "iex"
-          ? "Live last from IEX. Volume and range from the listing tape."
-          : "Delayed last. Add a free IEX key for live US prices."}
-      </p>
+      {feedStatus ? (
+        <div className="rounded-md border border-border bg-bg p-3">
+          <p className={cn("text-xs font-medium", feedTone)}>{feedStatus.label}</p>
+          <p className="mt-1 text-xs text-fg">{feedStatus.updatedLabel}</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">{feedStatus.explanation}</p>
+        </div>
+      ) : null}
       {quote ? (
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2 font-mono text-xs tabular-nums">
           <dt className="text-muted">Last</dt>
@@ -115,8 +138,10 @@ function StockSession() {
           <dd className="text-right text-fg">{formatQty(quote.volume)}</dd>
           {quote.lastTime ? (
             <>
-              <dt className="text-muted">As of</dt>
-              <dd className="text-right text-fg">{formatTime(quote.lastTime * 1000)}</dd>
+              <dt className="text-muted">Quote time</dt>
+              <dd className="text-right text-fg">
+                {formatCandleTime(quote.lastTime, "1m", chartTimeZone(symbol, "stocks"))}
+              </dd>
             </>
           ) : null}
         </dl>
@@ -139,8 +164,7 @@ function CryptoBook() {
   const maxQty = book
     ? Math.max(...book.bids.map((l) => l.qty), ...book.asks.map((l) => l.qty), 1)
     : 1;
-  const spread =
-    book && book.asks[0] && book.bids[0] ? book.asks[0].price - book.bids[0].price : 0;
+  const spread = book && book.asks[0] && book.bids[0] ? book.asks[0].price - book.bids[0].price : 0;
   const mid = quote?.lastPrice;
 
   return (
@@ -218,7 +242,9 @@ function TradesTape() {
         <ul>
           {trades.map((t) => (
             <li key={t.id} className="grid grid-cols-3 px-3 py-0.5 font-mono tabular-nums">
-              <span className={t.isBuyerMaker ? "text-down" : "text-up"}>{formatPrice(t.price)}</span>
+              <span className={t.isBuyerMaker ? "text-down" : "text-up"}>
+                {formatPrice(t.price)}
+              </span>
               <span className="text-right text-fg">{formatQty(t.qty)}</span>
               <span className="text-right text-muted">{formatTime(t.time)}</span>
             </li>

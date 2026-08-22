@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -36,11 +36,14 @@ export function Watchlist() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg">
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
-          {phone ? "Markets" : "Watchlist"}
-          <span className="ml-1.5 font-mono text-subtle">{names.length}</span>
+        <h2
+          aria-label={`${phone ? "Markets" : "Watchlist"}, ${names.length} items${phone ? "" : `, ${spanLabel(span)} performance`}`}
+          className="text-xs font-medium tracking-wide text-muted uppercase"
+        >
+          <span aria-hidden>{phone ? "Markets" : "Watchlist"}</span>
+          <span aria-hidden className="ml-1.5 font-mono text-subtle">{names.length}</span>
           {!phone && (
-            <span className="ml-2 font-sans font-medium normal-case text-fg">{spanLabel(span)}</span>
+            <span aria-hidden className="ml-2 font-sans font-medium normal-case text-fg">{spanLabel(span)}</span>
           )}
         </h2>
         <div className="flex items-center gap-2">
@@ -48,9 +51,10 @@ export function Watchlist() {
           <button
             type="button"
             onClick={() => setSearchOpen(true)}
-            className="min-h-11 px-1 text-xs text-accent hover:text-fg md:min-h-0"
+            className="flex min-h-11 items-center gap-1.5 px-1 text-xs text-accent hover:text-fg md:min-h-0"
           >
-            Add
+            <Search className="size-3.5" aria-hidden />
+            {venue === "stocks" ? "Find stocks" : "Add crypto"}
           </button>
         </div>
       </div>
@@ -61,11 +65,31 @@ export function Watchlist() {
         </div>
       ) : null}
       <ScrollArea className="min-h-0 flex-1">
-        {!loaded && (
+        {names.length > 0 && !loaded && (
           <div className="space-y-2 p-3">
             {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} className="h-12 w-full" />
             ))}
+          </div>
+        )}
+        {names.length === 0 && (
+          <div className="px-5 py-12 text-center">
+            <Search className="mx-auto size-7 text-subtle" aria-hidden />
+            <p className="mt-3 text-sm font-medium text-fg">
+              {venue === "stocks" ? "Build your first stock watchlist" : "Build your crypto watchlist"}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              {venue === "stocks"
+                ? "Discover companies, ETFs, and market indices from the US, Sweden, and beyond."
+                : "Find a market and add it here for quick access."}
+            </p>
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="mt-4 min-h-11 rounded-md bg-accent px-4 text-sm font-medium text-accent-fg"
+            >
+              {venue === "stocks" ? "Find stocks" : "Find crypto"}
+            </button>
           </div>
         )}
         <ul>
@@ -95,7 +119,7 @@ export function Watchlist() {
                     <span className="block truncate text-xs text-muted">
                       {bag && pnl
                         ? `${bag.qty} · ${formatPct(pnl.pnlPct)} vs cost`
-                        : [assetName(item), exchangeLabel(quote?.exchange)]
+                        : [quote?.shortName || assetName(item), exchangeLabel(quote?.exchange)]
                             .filter(Boolean)
                             .join(" · ")}
                     </span>

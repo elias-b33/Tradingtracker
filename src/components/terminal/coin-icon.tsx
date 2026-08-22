@@ -12,12 +12,6 @@ const SLUG: Record<string, string> = {
   RUNE: "rune",
 };
 
-const TV_CODE: Record<string, string> = {
-  RENDER: "RNDR",
-  RNDR: "RNDR",
-  RUN: "RUNE",
-};
-
 function pack(glob: Record<string, string>) {
   const out: Record<string, string> = {};
   for (const [path, url] of Object.entries(glob)) {
@@ -45,11 +39,6 @@ function slugFor(symbol: string): string {
   return (SLUG[base] ?? base).toLowerCase();
 }
 
-function tvCode(symbol: string): string {
-  const base = baseAsset(symbol).replace(/^1000/, "");
-  return TV_CODE[base] ?? base;
-}
-
 function avatarHue(symbol: string): number {
   let h = 0;
   for (const ch of symbol) h = (h * 33 + ch.charCodeAt(0)) >>> 0;
@@ -58,28 +47,34 @@ function avatarHue(symbol: string): number {
 
 export function CoinIcon({
   symbol,
+  name,
+  logoUrl,
   size = 32,
   className,
 }: {
   symbol: string;
+  name?: string;
+  logoUrl?: string;
   size?: number;
   className?: string;
 }) {
   const slug = slugFor(symbol);
-  const letter = baseAsset(symbol).replace(/^1000/, "").charAt(0);
+  const initials = baseAsset(symbol).replace(/^1000|[^a-z0-9]/gi, "").slice(0, 2);
+  const letter = initials.charAt(0);
   const [step, setStep] = useState(0);
   const stock = !isCryptoSymbol(symbol);
   const hue = avatarHue(symbol);
+  const stockLogoUrl = safeStockLogoUrl(logoUrl);
 
   useEffect(() => {
     setStep(0);
-  }, [slug, symbol]);
+  }, [logoUrl, name, slug, symbol]);
 
   if (stock) {
     return (
       <span
         aria-hidden
-        className={cn("inline-flex shrink-0 items-center justify-center rounded-full", className)}
+        className={cn("inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full", className)}
         style={{
           width: size,
           height: size,
@@ -87,16 +82,25 @@ export function CoinIcon({
           color: `hsl(${hue} 55% 72%)`,
         }}
       >
-        <span className="text-[11px] font-semibold">{letter}</span>
+        {!stockLogoUrl || step > 0 ? (
+          <span className="text-[10px] font-semibold">{initials || letter}</span>
+        ) : (
+          <img
+            src={stockLogoUrl}
+            alt=""
+            width={size}
+            height={size}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            className="size-full bg-white object-contain"
+            onError={() => setStep((n) => n + 1)}
+          />
+        )}
       </span>
     );
   }
 
-  const list = [
-    SVG[slug],
-    PNG[slug],
-    `https://s3-symbol-logo.tradingview.com/crypto/XTVC${tvCode(symbol)}--big.svg`,
-  ].filter(Boolean) as string[];
+  const list = [SVG[slug], PNG[slug]].filter(Boolean) as string[];
 
   return (
     <span
@@ -121,4 +125,22 @@ export function CoinIcon({
       )}
     </span>
   );
+}
+
+/** Stock logos are opt-in provider data; never derive or scrape a vendor URL from a ticker. */
+function safeStockLogoUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  if (value.startsWith("/") && !value.startsWith("//")) return value;
+  try {
+    const url = new URL(value);
+    const allowedHosts = new Set([
+      "static.finnhub.io",
+      "static2.finnhub.io",
+      "api.twelvedata.com",
+      "logo.twelvedata.com",
+    ]);
+    return url.protocol === "https:" && allowedHosts.has(url.hostname) ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
 }

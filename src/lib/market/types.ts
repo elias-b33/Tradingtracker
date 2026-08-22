@@ -40,6 +40,18 @@ export interface Candle {
   volume: number;
 }
 
+export type QuoteSource =
+  | "binance"
+  | "alpaca-iex"
+  | "finnhub"
+  | "yahoo"
+  // Kept for cached quotes created by older app versions.
+  | "iex"
+  | "delayed";
+
+export type QuoteFreshness =
+  "real-time" | "recent" | "delayed" | "previous-close" | "market-closed" | "stale" | "unknown";
+
 export interface Quote {
   symbol: string;
   lastPrice: number;
@@ -50,7 +62,15 @@ export interface Quote {
   volume: number;
   quoteVolume: number;
   openPrice: number;
-  source?: "binance" | "iex" | "delayed";
+  /** Data provider. Feed and timing are separate so global providers can be added safely. */
+  source?: QuoteSource;
+  /** Provider-specific feed, for example Alpaca's `iex` feed or Yahoo's exchange feed. */
+  feed?: string;
+  freshness?: QuoteFreshness;
+  /** Provider-declared delay, in seconds. Zero means no declared delay. */
+  delaySeconds?: number;
+  /** Unix timestamp (seconds) when the server received this quote. */
+  receivedAt?: number;
   marketState?: "regular" | "pre" | "post" | "closed";
   currency?: string;
   exchange?: string;

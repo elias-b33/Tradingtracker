@@ -2,36 +2,40 @@ import { useState, type FormEvent } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { authClient, signIn } from "@/lib/auth/client";
-import type { SocialProviderId } from "@/lib/auth/server";
+import { oauthErrorMessage } from "@/lib/auth/errors";
 import { Logo } from "@/components/terminal/logo";
 import { Input } from "@/components/ui/input";
 
 const fetchSocialProviders = createServerFn({ method: "GET" }).handler(async () => {
-  const { enabledSocialProviders } = await import("@/lib/auth/server");
-  return enabledSocialProviders;
+  const { googleAuthEnabled } = await import("@/lib/auth/server");
+  return { google: googleAuthEnabled };
 });
 
 export const Route = createFileRoute("/login")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    error: typeof search.error === "string" ? search.error : undefined,
+  }),
   loader: () => fetchSocialProviders(),
   component: Login,
 });
 
 function Login() {
   const socialProviders = Route.useLoaderData();
+  const search = Route.useSearch();
   const navigate = useNavigate();
   const [pending, setPending] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => oauthErrorMessage(search.error));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"in" | "up">("in");
 
-  async function startOAuth(providerId: SocialProviderId) {
+  async function startGoogle() {
     setError(null);
-    setPending(providerId);
+    setPending("google");
     try {
-      await signIn(providerId, { callbackURL: "/" });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed");
+      await signIn({ callbackURL: "/", errorCallbackURL: "/login" });
+    } catch {
+      setError("Google sign-in could not be started. Please try again or use email instead.");
       setPending(null);
     }
   }
@@ -44,7 +48,10 @@ function Login() {
       const payload = { email: email.trim(), password };
       const result =
         mode === "up"
-          ? await authClient.signUp.email({ ...payload, name: email.trim().split("@")[0] ?? "Trader" })
+          ? await authClient.signUp.email({
+              ...payload,
+              name: email.trim().split("@")[0] ?? "Trader",
+            })
           : await authClient.signIn.email(payload);
       if (result.error) throw new Error(result.error.message || "Sign-in failed");
       await authClient.getSession().catch(() => undefined);
@@ -67,31 +74,33 @@ function Login() {
           Watchlists, drawings, alerts, and notes follow you to every phone and laptop.
         </p>
 
-        <div className="mt-8 space-y-2">
-          {socialProviders.map((providerId) => {
-            const label = providerId === "google" ? "Google" : "X";
-            return (
+        {socialProviders.google && (
+          <>
+            <div className="mt-8">
               <button
-                key={providerId}
                 type="button"
                 disabled={pending !== null}
-                onClick={() => void startOAuth(providerId)}
+                aria-busy={pending === "google"}
+                onClick={() => void startGoogle()}
                 className="flex h-11 w-full items-center justify-center gap-2.5 rounded-lg bg-elevated text-sm font-medium text-fg shadow-border transition-[box-shadow,background-color] duration-150 hover:bg-elevated/80 disabled:cursor-wait disabled:opacity-60"
               >
-                {providerId === "google" ? <GoogleMark /> : <XMark />}
-                {pending === providerId ? "Waiting for sign-in…" : `Continue with ${label}`}
+                <GoogleMark />
+                {pending === "google" ? "Redirecting to Google…" : "Continue with Google"}
               </button>
-            );
-          })}
-        </div>
+            </div>
 
-        <div className="mt-6 flex items-center gap-3 text-xs text-subtle">
-          <span className="h-px flex-1 bg-border" />
-          or email
-          <span className="h-px flex-1 bg-border" />
-        </div>
+            <div className="mt-6 flex items-center gap-3 text-xs text-subtle">
+              <span className="h-px flex-1 bg-border" />
+              or email
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          </>
+        )}
 
-        <form className="mt-4 space-y-2" onSubmit={(event) => void startEmail(event)}>
+        <form
+          className={`${socialProviders.google ? "mt-4" : "mt-8"} space-y-2`}
+          onSubmit={(event) => void startEmail(event)}
+        >
           <Input
             type="email"
             name="email"
@@ -132,7 +141,10 @@ function Login() {
         </button>
 
         {error && (
-          <div className="mt-4 rounded-lg bg-down/10 px-3 py-2 text-sm leading-relaxed text-down">
+          <div
+            role="alert"
+            className="mt-4 rounded-lg bg-down/10 px-3 py-2 text-sm leading-relaxed text-down"
+          >
             {error}
           </div>
         )}
@@ -168,14 +180,6 @@ function GoogleMark() {
         fill="#EA4335"
         d="M12 4.8c1.7 0 3.3.6 4.5 1.8l3.4-3.4C17.9 1.2 15.2 0 12 0 7.5 0 3.5 2.6 1.5 6.5l4.1 3.1C6.5 6.8 9 4.8 12 4.8z"
       />
-    </svg>
-  );
-}
-
-function XMark() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-4 fill-fg" aria-hidden="true">
-      <path d="M18.2 2H21l-6.6 7.5L22 22h-6.8l-4.7-6.9L5 22H2.2l7-8L2 2h6.9l4.3 6.4L18.2 2zm-1.2 18h1.9L7.1 3.9H5.1L17 20z" />
     </svg>
   );
 }

@@ -1,11 +1,17 @@
 import { createServerFn } from "@tanstack/react-start";
 import { spanStartMs } from "./spans";
-import { STOCK_META, isUsEquity, sanitizeMarketSymbol } from "./venue";
+import { deriveQuoteFreshness, STOCK_META, isUsEquity, sanitizeMarketSymbol } from "./venue";
 import type { Candle, IntervalId, Quote, SpanId, SymbolInfo } from "./types";
 import type { SpanMove } from "./binance";
 import { TtlLruCache } from "./runtime-guards";
 
 const cache = new TtlLruCache<Promise<unknown>>({ maxEntries: 192 });
+
+export type StockProfile = {
+  symbol: string;
+  name?: string;
+  logoUrl?: string;
+};
 
 function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
@@ -20,6 +26,63 @@ async function guardPublicRequest(scope: string, limit: number): Promise<void> {
   const { enforcePublicRateLimit } = await import("../server/public-rate-limit.server");
   enforcePublicRateLimit(`stocks:${scope}`, limit);
 }
+
+function finnhubLogoUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && ["static.finnhub.io", "static2.finnhub.io"].includes(url.hostname)
+      ? url.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fetchFinnhubProfile(symbol: string, key: string): Promise<StockProfile | null> {
+  const response = await fetch(
+    `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}`,
+    {
+      headers: { "X-Finnhub-Token": key },
+      signal: AbortSignal.timeout(8000),
+    },
+  );
+  if (!response.ok) throw new Error(`Finnhub profile returned ${response.status}`);
+  const row = (await response.json()) as { ticker?: string; name?: string; logo?: string };
+  if (!row.ticker && !row.name && !row.logo) return null;
+  return {
+    symbol,
+    name: row.name?.trim() || undefined,
+    logoUrl: finnhubLogoUrl(row.logo),
+  };
+}
+
+/** Optional, cached company branding. Provider credentials remain server-only. */
+export const getStockProfiles = createServerFn({ method: "GET" })
+  .validator((input: { symbols?: string[] }) => ({
+    symbols: [...new Set((input.symbols ?? []).map((symbol) => sanitizeMarketSymbol(symbol, "stocks")).filter(Boolean))]
+      .slice(0, 8),
+  }))
+  .handler(async ({ data }): Promise<{ ok: true; profiles: StockProfile[] } | { ok: false; error: string }> => {
+    try {
+      await guardPublicRequest("profiles", 30);
+      const key = process.env.FINNHUB_API_KEY?.trim();
+      if (!key || data.symbols.length === 0) return { ok: true, profiles: [] };
+      const settled = await Promise.allSettled(
+        data.symbols.map((symbol) =>
+          cached(`fh-profile:${symbol}`, 12 * 60 * 60 * 1000, () => fetchFinnhubProfile(symbol, key)),
+        ),
+      );
+      return {
+        ok: true,
+        profiles: settled.flatMap((result) =>
+          result.status === "fulfilled" && result.value ? [result.value as StockProfile] : [],
+        ),
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "Stock profiles unavailable" };
+    }
+  });
 
 async function yahoo(path: string): Promise<unknown> {
   const url = path.startsWith("http") ? path : `https://query1.finance.yahoo.com${path}`;
@@ -47,6 +110,8 @@ type SparkMeta = {
   currency?: string;
   exchangeName?: string;
   priceHint?: number;
+  /** Yahoo reports this value in minutes for the listing's exchange feed. */
+  exchangeDataDelayedBy?: number;
   currentTradingPeriod?: {
     pre?: { start: number; end: number };
     regular?: { start: number; end: number };
@@ -68,7 +133,9 @@ function quoteFromMeta(symbol: string, meta: SparkMeta, source: Quote["source"])
   const prev = Number(meta.chartPreviousClose);
   if (!Number.isFinite(last) || last <= 0) return null;
   const open = Number.isFinite(prev) && prev > 0 ? prev : last;
-  return {
+  const receivedAt = Math.floor(Date.now() / 1000);
+  const delayMinutes = Number(meta.exchangeDataDelayedBy);
+  const quote: Quote = {
     symbol,
     lastPrice: last,
     openPrice: open,
@@ -79,6 +146,9 @@ function quoteFromMeta(symbol: string, meta: SparkMeta, source: Quote["source"])
     volume: Number(meta.regularMarketVolume) || 0,
     quoteVolume: 0,
     source,
+    feed: "exchange",
+    delaySeconds: Number.isFinite(delayMinutes) ? Math.max(0, delayMinutes * 60) : undefined,
+    receivedAt,
     marketState: marketState(meta),
     currency: meta.currency,
     exchange: meta.exchangeName,
@@ -88,118 +158,153 @@ function quoteFromMeta(symbol: string, meta: SparkMeta, source: Quote["source"])
     sessionStart: meta.currentTradingPeriod?.regular?.start,
     sessionEnd: meta.currentTradingPeriod?.regular?.end,
   };
+  quote.freshness = deriveQuoteFreshness(quote, receivedAt);
+  return quote;
 }
 
-type IexCfg =
-  | { kind: "finnhub"; key: string }
-  | { kind: "alpaca"; id: string; secret: string };
+type UsQuoteCfg = { kind: "finnhub"; key: string } | { kind: "alpaca"; id: string; secret: string };
 
-function iexConfig(): IexCfg | null {
-  const fh = process.env.FINNHUB_API_KEY?.trim();
-  if (fh) return { kind: "finnhub", key: fh };
+function usQuoteConfig(): UsQuoteCfg | null {
+  // Alpaca supplies all requested U.S. IEX snapshots in one call. Prefer that
+  // batch contract over Finnhub's one-request-per-symbol fallback.
   const id = process.env.ALPACA_API_KEY_ID?.trim();
   const secret = process.env.ALPACA_API_SECRET_KEY?.trim();
   if (id && secret) return { kind: "alpaca", id, secret };
+  const fh = process.env.FINNHUB_API_KEY?.trim();
+  if (fh) return { kind: "finnhub", key: fh };
   return null;
 }
 
-async function iexQuotes(symbols: string[]): Promise<Record<string, Quote>> {
-  const cfg = iexConfig();
+export function quoteTimestampSeconds(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value > 10_000_000_000 ? value / 1000 : value);
+  }
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined;
+}
+
+async function usProviderQuotes(symbols: string[]): Promise<Record<string, Quote>> {
+  const cfg = usQuoteConfig();
   const us = symbols.filter(isUsEquity);
   if (!cfg || !us.length) return {};
-  const out: Record<string, Quote> = {};
-  try {
-    if (cfg.kind === "finnhub") {
-      await Promise.all(
-        us.map(async (symbol) => {
-          const res = await fetch(
-            `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${cfg.key}`,
-            { signal: AbortSignal.timeout(8000) },
-          );
-          if (!res.ok) return;
-          const row = (await res.json()) as { c?: number; d?: number; dp?: number; h?: number; l?: number; o?: number; pc?: number };
-          const last = Number(row.c);
-          const prev = Number(row.pc);
-          if (!Number.isFinite(last) || last <= 0) return;
+  const ttlMs = cfg.kind === "alpaca" ? 4000 : 30_000;
+  return cached(`us-quotes:${cfg.kind}:${us.join(",")}`, ttlMs, async () => {
+    const out: Record<string, Quote> = {};
+    const receivedAt = Math.floor(Date.now() / 1000);
+    try {
+      if (cfg.kind === "finnhub") {
+        await Promise.all(
+          us.map(async (symbol) => {
+            const res = await fetch(
+              `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${cfg.key}`,
+              { signal: AbortSignal.timeout(8000) },
+            );
+            if (!res.ok) return;
+            const row = (await res.json()) as {
+              c?: number;
+              d?: number;
+              dp?: number;
+              h?: number;
+              l?: number;
+              o?: number;
+              pc?: number;
+              t?: number;
+            };
+            const last = Number(row.c);
+            const prev = Number(row.pc);
+            if (!Number.isFinite(last) || last <= 0) return;
+            const open = Number.isFinite(prev) && prev > 0 ? prev : last;
+            const quote: Quote = {
+              symbol,
+              lastPrice: last,
+              openPrice: open,
+              priceChange: Number(row.d) || last - open,
+              priceChangePercent: Number(row.dp) || (open ? ((last - open) / open) * 100 : 0),
+              highPrice: Number(row.h) || last,
+              lowPrice: Number(row.l) || last,
+              volume: 0,
+              quoteVolume: 0,
+              source: "finnhub",
+              feed: "quote",
+              lastTime: quoteTimestampSeconds(row.t),
+              receivedAt,
+              currency: "USD",
+            };
+            quote.freshness = deriveQuoteFreshness(quote, receivedAt);
+            out[symbol] = quote;
+          }),
+        );
+      } else {
+        const res = await fetch(
+          `https://data.alpaca.markets/v2/stocks/snapshots?symbols=${encodeURIComponent(us.join(","))}&feed=iex`,
+          {
+            headers: {
+              "APCA-API-KEY-ID": cfg.id,
+              "APCA-API-SECRET-KEY": cfg.secret,
+            },
+            signal: AbortSignal.timeout(8000),
+          },
+        );
+        if (!res.ok) return {};
+        const raw = (await res.json()) as Record<
+          string,
+          {
+            latestTrade?: { p?: number; t?: string };
+            dailyBar?: { o?: number; h?: number; l?: number; v?: number; c?: number; t?: string };
+            prevDailyBar?: { c?: number };
+          }
+        >;
+        for (const symbol of us) {
+          const row = raw[symbol];
+          const last = Number(row?.latestTrade?.p ?? row?.dailyBar?.c);
+          const prev = Number(row?.prevDailyBar?.c);
+          if (!Number.isFinite(last) || last <= 0) continue;
           const open = Number.isFinite(prev) && prev > 0 ? prev : last;
-          out[symbol] = {
+          const quote: Quote = {
             symbol,
             lastPrice: last,
             openPrice: open,
-            priceChange: Number(row.d) || last - open,
-            priceChangePercent: Number(row.dp) || (open ? ((last - open) / open) * 100 : 0),
-            highPrice: Number(row.h) || last,
-            lowPrice: Number(row.l) || last,
-            volume: 0,
+            priceChange: last - open,
+            priceChangePercent: open ? ((last - open) / open) * 100 : 0,
+            highPrice: Number(row?.dailyBar?.h) || last,
+            lowPrice: Number(row?.dailyBar?.l) || last,
+            volume: Number(row?.dailyBar?.v) || 0,
             quoteVolume: 0,
-            source: "iex",
-            marketState: "regular",
+            source: "alpaca-iex",
+            feed: "iex",
+            delaySeconds: 0,
+            lastTime: quoteTimestampSeconds(row?.latestTrade?.t ?? row?.dailyBar?.t),
+            receivedAt,
             currency: "USD",
           };
-        }),
-      );
-    } else {
-      const res = await fetch(
-        `https://data.alpaca.markets/v2/stocks/snapshots?symbols=${encodeURIComponent(us.join(","))}&feed=iex`,
-        {
-          headers: {
-            "APCA-API-KEY-ID": cfg.id,
-            "APCA-API-SECRET-KEY": cfg.secret,
-          },
-          signal: AbortSignal.timeout(8000),
-        },
-      );
-      if (!res.ok) return {};
-      const raw = (await res.json()) as Record<
-        string,
-        {
-          latestTrade?: { p?: number };
-          dailyBar?: { o?: number; h?: number; l?: number; v?: number; c?: number };
-          prevDailyBar?: { c?: number };
+          quote.freshness = deriveQuoteFreshness(quote, receivedAt);
+          out[symbol] = quote;
         }
-      >;
-      for (const symbol of us) {
-        const row = raw[symbol];
-        const last = Number(row?.latestTrade?.p ?? row?.dailyBar?.c);
-        const prev = Number(row?.prevDailyBar?.c);
-        if (!Number.isFinite(last) || last <= 0) continue;
-        const open = Number.isFinite(prev) && prev > 0 ? prev : last;
-        out[symbol] = {
-          symbol,
-          lastPrice: last,
-          openPrice: open,
-          priceChange: last - open,
-          priceChangePercent: open ? ((last - open) / open) * 100 : 0,
-          highPrice: Number(row?.dailyBar?.h) || last,
-          lowPrice: Number(row?.dailyBar?.l) || last,
-          volume: Number(row?.dailyBar?.v) || 0,
-          quoteVolume: 0,
-          source: "iex",
-          marketState: "regular",
-          currency: "USD",
-        };
       }
+    } catch {
+      return {};
     }
-  } catch {
-    return {};
-  }
-  return out;
+    return out;
+  });
 }
 
 async function sparkQuotes(symbols: string[]): Promise<Quote[]> {
   if (!symbols.length) return [];
-  const param = encodeURIComponent(symbols.join(","));
-  const json = (await yahoo(`/v7/finance/spark?symbols=${param}&range=1d&interval=1d`)) as {
-    spark?: { result?: Array<{ symbol: string; response?: Array<{ meta?: SparkMeta }> }> };
-  };
-  const quotes: Quote[] = [];
-  for (const row of json.spark?.result ?? []) {
-    const meta = row.response?.[0]?.meta;
-    if (!meta) continue;
-    const q = quoteFromMeta(row.symbol, meta, "delayed");
-    if (q) quotes.push(q);
-  }
-  return quotes;
+  return cached(`yf-spark:${symbols.join(",")}`, 4500, async () => {
+    const param = encodeURIComponent(symbols.join(","));
+    const json = (await yahoo(`/v7/finance/spark?symbols=${param}&range=1d&interval=1d`)) as {
+      spark?: { result?: Array<{ symbol: string; response?: Array<{ meta?: SparkMeta }> }> };
+    };
+    const quotes: Quote[] = [];
+    for (const row of json.spark?.result ?? []) {
+      const meta = row.response?.[0]?.meta;
+      if (!meta) continue;
+      const q = quoteFromMeta(row.symbol, meta, "yahoo");
+      if (q) quotes.push(q);
+    }
+    return quotes;
+  });
 }
 
 const YF_INTERVAL: Record<IntervalId, { interval: string; range: string }> = {
@@ -212,7 +317,10 @@ const YF_INTERVAL: Record<IntervalId, { interval: string; range: string }> = {
   "1w": { interval: "1wk", range: "max" },
 };
 
-function rangeForSpan(span: SpanId | null | undefined, interval: IntervalId): { interval: string; range: string } {
+function rangeForSpan(
+  span: SpanId | null | undefined,
+  interval: IntervalId,
+): { interval: string; range: string } {
   if (!span) return YF_INTERVAL[interval];
   switch (span) {
     case "1D":
@@ -240,10 +348,12 @@ type YahooChartData = {
 };
 
 function parseChart(json: unknown): YahooChartData {
-  const result = (json as { chart?: { result?: Array<Record<string, unknown>> } }).chart?.result?.[0];
+  const result = (json as { chart?: { result?: Array<Record<string, unknown>> } }).chart
+    ?.result?.[0];
   if (!result) return { candles: [], timeZone: "UTC" };
   const ts = (result.timestamp as number[] | undefined) ?? [];
-  const quote = (result.indicators as { quote?: Array<Record<string, Array<number | null>>> })?.quote?.[0];
+  const quote = (result.indicators as { quote?: Array<Record<string, Array<number | null>>> })
+    ?.quote?.[0];
   const meta = result.meta as { exchangeTimezoneName?: string } | undefined;
   const timeZone = meta?.exchangeTimezoneName || "UTC";
   if (!quote) return { candles: [], timeZone };
@@ -336,7 +446,11 @@ export function aggregateStockCandles(
   return aggregated;
 }
 
-async function fetchChartData(symbol: string, interval: string, range: string): Promise<YahooChartData> {
+async function fetchChartData(
+  symbol: string,
+  interval: string,
+  range: string,
+): Promise<YahooChartData> {
   const path = `/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}&includePrePost=false`;
   return cached(`yf:${symbol}:${interval}:${range}`, 20_000, async () => {
     const json = await yahoo(path);
@@ -356,49 +470,84 @@ function moveFrom(candles: Candle[], last: number, startMs: number | null): Span
   return { pct: ((last - first.open) / first.open) * 100, delta: last - first.open };
 }
 
+/** Prefer the faster U.S. print while retaining Yahoo's exchange/session metadata. */
+export function mergeStockQuotes(
+  fallback: Quote | undefined,
+  preferred: Quote | undefined,
+  nowSeconds = Date.now() / 1000,
+): Quote | undefined {
+  if (!preferred) return fallback;
+  if (!fallback) {
+    return { ...preferred, freshness: deriveQuoteFreshness(preferred, nowSeconds) };
+  }
+  const previousClose = fallback.openPrice || preferred.openPrice || preferred.lastPrice;
+  const merged: Quote = {
+    ...fallback,
+    lastPrice: preferred.lastPrice,
+    openPrice: previousClose,
+    priceChange: preferred.lastPrice - previousClose,
+    priceChangePercent: previousClose
+      ? ((preferred.lastPrice - previousClose) / previousClose) * 100
+      : 0,
+    // Alpaca's free IEX day bar covers one exchange. Keep the worldwide
+    // fallback's listing-level range and volume, but extend the range if the
+    // newer U.S. print falls outside it.
+    highPrice: Math.max(fallback.highPrice, preferred.lastPrice),
+    lowPrice: Math.min(fallback.lowPrice, preferred.lastPrice),
+    volume: fallback.volume || preferred.volume,
+    source: preferred.source,
+    feed: preferred.feed,
+    delaySeconds: preferred.delaySeconds,
+    receivedAt: preferred.receivedAt,
+    lastTime: preferred.lastTime ?? fallback.lastTime,
+  };
+  merged.freshness = deriveQuoteFreshness(merged, nowSeconds);
+  return merged;
+}
+
 export const getStockTickers = createServerFn({ method: "GET" })
   .validator((input: { symbols?: string[] }) => ({
-    symbols: [...new Set((input.symbols ?? []).map((s) => sanitizeMarketSymbol(s, "stocks")).filter(Boolean))].slice(
-      0,
-      24,
-    ),
+    symbols: [
+      ...new Set(
+        (input.symbols ?? []).map((s) => sanitizeMarketSymbol(s, "stocks")).filter(Boolean),
+      ),
+    ].slice(0, 24),
   }))
-  .handler(async ({ data }): Promise<{ ok: true; quotes: Quote[] } | { ok: false; error: string }> => {
-    try {
-      await guardPublicRequest("tickers", 180);
-      const yahooQuotes = await sparkQuotes(data.symbols);
-      const live = await iexQuotes(data.symbols);
-      const byYahoo = Object.fromEntries(yahooQuotes.map((q) => [q.symbol, q]));
-      const merged: Quote[] = [];
-      const seen = new Set<string>();
-      for (const symbol of data.symbols) {
-        const y = byYahoo[symbol];
-        const ix = live[symbol];
-        if (ix && y) {
-          merged.push({
-            ...y,
-            lastPrice: ix.lastPrice,
-            openPrice: ix.openPrice || y.openPrice,
-            priceChange: ix.priceChange,
-            priceChangePercent: ix.priceChangePercent,
-            highPrice: ix.highPrice || y.highPrice,
-            lowPrice: ix.lowPrice || y.lowPrice,
-            volume: ix.volume || y.volume,
-            source: "iex",
-          });
-        } else if (ix || y) {
-          merged.push(ix ?? y);
+  .handler(
+    async ({ data }): Promise<{ ok: true; quotes: Quote[] } | { ok: false; error: string }> => {
+      try {
+        await guardPublicRequest("tickers", 180);
+        // The fast U.S. feed must not wait for the worldwide fallback, and a
+        // fallback outage must not discard a valid provider quote.
+        const [yahooResult, providerResult] = await Promise.allSettled([
+          sparkQuotes(data.symbols),
+          usProviderQuotes(data.symbols),
+        ]);
+        const yahooQuotes = yahooResult.status === "fulfilled" ? yahooResult.value : [];
+        const live = providerResult.status === "fulfilled" ? providerResult.value : {};
+        const byYahoo = Object.fromEntries(yahooQuotes.map((q) => [q.symbol, q]));
+        const merged: Quote[] = [];
+        const seen = new Set<string>();
+        for (const symbol of data.symbols) {
+          const y = byYahoo[symbol];
+          const ix = live[symbol];
+          const quote = mergeStockQuotes(y, ix);
+          if (quote) merged.push(quote);
+          seen.add(symbol);
         }
-        seen.add(symbol);
+        for (const q of yahooQuotes) {
+          if (!seen.has(q.symbol)) merged.push(q);
+        }
+        if (!merged.length && yahooResult.status === "rejected") throw yahooResult.reason;
+        return { ok: true, quotes: merged };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Stock quotes unavailable",
+        };
       }
-      for (const q of yahooQuotes) {
-        if (!seen.has(q.symbol)) merged.push(q);
-      }
-      return { ok: true, quotes: merged };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : "Stock quotes unavailable" };
-    }
-  });
+    },
+  );
 
 export const getStockKlines = createServerFn({ method: "GET" })
   .validator((input: { symbol: string; interval: IntervalId; span?: SpanId | null }) => ({
@@ -407,9 +556,7 @@ export const getStockKlines = createServerFn({ method: "GET" })
     span: input.span ?? null,
   }))
   .handler(
-    async ({
-      data,
-    }): Promise<{ ok: true; candles: Candle[] } | { ok: false; error: string }> => {
+    async ({ data }): Promise<{ ok: true; candles: Candle[] } | { ok: false; error: string }> => {
       try {
         await guardPublicRequest("klines", 120);
         const spec = rangeForSpan(data.span, data.interval);
@@ -421,7 +568,10 @@ export const getStockKlines = createServerFn({ method: "GET" })
         if (!candles.length) return { ok: false, error: "No stock history for this symbol." };
         return { ok: true, candles };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : "Failed to load stock chart" };
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Failed to load stock chart",
+        };
       }
     },
   );
@@ -433,7 +583,10 @@ export const getStockSpanReturns = createServerFn({ method: "GET" })
   .handler(
     async ({
       data,
-    }): Promise<{ ok: true; last: number; returns: Partial<Record<SpanId, SpanMove | null>> } | { ok: false; error: string }> => {
+    }): Promise<
+      | { ok: true; last: number; returns: Partial<Record<SpanId, SpanMove | null>> }
+      | { ok: false; error: string }
+    > => {
       try {
         await guardPublicRequest("span", 90);
         const [daily, weekly] = await Promise.all([
@@ -456,20 +609,28 @@ export const getStockSpanReturns = createServerFn({ method: "GET" })
           },
         };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : "Failed to load range returns" };
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Failed to load range returns",
+        };
       }
     },
   );
 
 export const getStockDeskSpanReturns = createServerFn({ method: "GET" })
   .validator((input: { symbols: string[]; span: SpanId }) => ({
-    symbols: [...new Set(input.symbols.map((s) => sanitizeMarketSymbol(s, "stocks")).filter(Boolean))].slice(0, 12),
+    symbols: [
+      ...new Set(input.symbols.map((s) => sanitizeMarketSymbol(s, "stocks")).filter(Boolean)),
+    ].slice(0, 12),
     span: input.span,
   }))
   .handler(
     async ({
       data,
-    }): Promise<{ ok: true; span: SpanId; returns: Record<string, SpanMove | null> } | { ok: false; error: string }> => {
+    }): Promise<
+      | { ok: true; span: SpanId; returns: Record<string, SpanMove | null> }
+      | { ok: false; error: string }
+    > => {
       try {
         await guardPublicRequest("desk-span", 60);
         if (data.span === "1D") return { ok: true, span: data.span, returns: {} };
@@ -536,10 +697,21 @@ export const searchStocks = createServerFn({ method: "GET" })
         const rank = (item: { symbol: string; quote: string }) => {
           const ex = item.quote.toUpperCase();
           if (ex.includes("OTC") || ex.includes("PINK") || ex.includes("GREY")) return 6;
-          if (isUsEquity(item.symbol) && (ex.includes("NASDAQ") || ex.includes("NYSE") || ex.includes("CBOE") || ex.includes("NYSE ARCA")))
+          if (
+            isUsEquity(item.symbol) &&
+            (ex.includes("NASDAQ") ||
+              ex.includes("NYSE") ||
+              ex.includes("CBOE") ||
+              ex.includes("NYSE ARCA"))
+          )
             return 0;
           if (isUsEquity(item.symbol) && !item.symbol.includes(".")) return 1;
-          if (item.symbol.endsWith(".ST") || item.symbol.endsWith(".CO") || item.symbol.endsWith(".HE") || item.symbol.endsWith(".OL"))
+          if (
+            item.symbol.endsWith(".ST") ||
+            item.symbol.endsWith(".CO") ||
+            item.symbol.endsWith(".HE") ||
+            item.symbol.endsWith(".OL")
+          )
             return 1;
           if (item.symbol.endsWith(".L") || ex.includes("LONDON") || ex.includes("LSE")) return 2;
           return 5;

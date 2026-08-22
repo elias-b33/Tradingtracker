@@ -25,7 +25,7 @@ import { formatCandleTime, formatCompact, formatPrice } from "@/lib/market/forma
 import { connectKlineStream, type StreamConnectionStatus } from "@/lib/market/ws";
 import { theme } from "@/lib/theme";
 import type { Candle, StoredDrawing } from "@/lib/market/types";
-import { chartTimeZone } from "@/lib/market/venue";
+import { chartTimeZone, quoteFeedStatus } from "@/lib/market/venue";
 import { useTerminalStore } from "@/lib/store";
 
 type Lc = typeof import("lightweight-charts");
@@ -89,7 +89,8 @@ export function ChartView() {
   const indicators = useTerminalStore((s) => s.indicators);
   const drawingTool = useTerminalStore((s) => s.drawingTool);
   const drawings = useTerminalStore((s) => s.drawings[s.symbol] ?? EMPTY_DRAWINGS);
-  const lastPrice = useTerminalStore((s) => s.quotes[s.symbol]?.lastPrice);
+  const quote = useTerminalStore((s) => s.quotes[s.symbol]);
+  const lastPrice = quote?.lastPrice;
   const addDrawing = useTerminalStore((s) => s.addDrawing);
   const setDrawingTool = useTerminalStore((s) => s.setDrawingTool);
 
@@ -622,14 +623,22 @@ export function ChartView() {
   const shown = hover ?? last;
   const up = shown ? shown.close >= shown.open : true;
   const updateAge = lastUpdateAt === null ? null : Math.max(0, clock - lastUpdateAt);
-  const staleAfter = venue === "stocks" ? 45_000 : 15_000;
-  const stale = updateAge !== null && updateAge > staleAfter;
+  const stale = updateAge !== null && updateAge > 15_000;
   const updateLabel = updateAge === null ? null : formatUpdateAge(updateAge);
   const feed = (() => {
     if (venue === "stocks") {
-      if (!updateLabel) return { label: "Updating", className: "text-subtle" };
-      if (stale) return { label: `Stale · updated ${updateLabel}`, className: "text-warn" };
-      return { label: `Delayed · updated ${updateLabel}`, className: "text-subtle" };
+      if (!quote) return { label: "Updating", className: "text-subtle" };
+      const status = quoteFeedStatus(quote, clock / 1000);
+      const className =
+        status.freshness === "real-time" || status.freshness === "recent"
+          ? "text-accent"
+          : status.freshness === "stale"
+            ? "text-warn"
+            : "text-subtle";
+      return {
+        label: `${status.label} · ${status.updatedLabel.toLowerCase()}`,
+        className,
+      };
     }
     if (streamStatus === "open" && !stale) {
       return {
