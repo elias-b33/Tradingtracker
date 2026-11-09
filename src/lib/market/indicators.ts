@@ -14,45 +14,78 @@ export function sma(candles: Candle[], period: number): LinePoint[] {
   return out;
 }
 
-export function ema(candles: Candle[], period: number): LinePoint[] {
-  const out: LinePoint[] = [];
-  if (!candles.length || period <= 0) return out;
+/** Pine-compatible EMA: seeded with the SMA of the first `period` values. */
+function emaValues(values: number[], period: number): Array<number | null> {
+  const out: Array<number | null> = new Array(values.length).fill(null);
+  if (period <= 0 || values.length < period) return out;
   const k = 2 / (period + 1);
-  let prev = candles[0].close;
+  let seed = 0;
+  for (let i = 0; i < period; i++) seed += values[i];
+  let prev = seed / period;
+  out[period - 1] = prev;
+  for (let i = period; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+
+export function ema(candles: Candle[], period: number): LinePoint[] {
+  const values = emaValues(
+    candles.map((c) => c.close),
+    period,
+  );
+  const out: LinePoint[] = [];
   for (let i = 0; i < candles.length; i++) {
-    const value = candles[i].close * k + prev * (1 - k);
-    prev = value;
-    if (i >= period - 1) out.push({ time: candles[i].time, value });
+    const value = values[i];
+    if (value !== null) out.push({ time: candles[i].time, value });
   }
   return out;
 }
 
 export function bollinger(candles: Candle[], period = 20, mult = 2) {
-  const mid = sma(candles, period);
+  const mid: LinePoint[] = [];
   const upper: LinePoint[] = [];
   const lower: LinePoint[] = [];
-  for (const point of mid) {
-    const idx = candles.findIndex((c) => c.time === point.time);
-    if (idx < period - 1) continue;
-    let variance = 0;
-    for (let j = idx - period + 1; j <= idx; j++) {
-      const diff = candles[j].close - point.value;
-      variance += diff * diff;
+  let sum = 0;
+  let sumSq = 0;
+  for (let i = 0; i < candles.length; i++) {
+    const v = candles[i].close;
+    sum += v;
+    sumSq += v * v;
+    if (i >= period) {
+      const old = candles[i - period].close;
+      sum -= old;
+      sumSq -= old * old;
     }
-    const std = Math.sqrt(variance / period);
-    upper.push({ time: point.time, value: point.value + mult * std });
-    lower.push({ time: point.time, value: point.value - mult * std });
+    if (i < period - 1) continue;
+    const mean = sum / period;
+    const std = Math.sqrt(Math.max(0, sumSq / period - mean * mean));
+    const time = candles[i].time;
+    mid.push({ time, value: mean });
+    upper.push({ time, value: mean + mult * std });
+    lower.push({ time, value: mean - mult * std });
   }
   return { mid, upper, lower };
 }
 
-export function vwap(candles: Candle[]): LinePoint[] {
+/** Session VWAP, reset at each calendar day in `timeZone` (UTC by default). */
+export function vwap(candles: Candle[], timeZone?: string): LinePoint[] {
   const out: LinePoint[] = [];
+  let fmt: Intl.DateTimeFormat | null = null;
+  if (timeZone) {
+    try {
+      fmt = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    } catch {
+      fmt = null;
+    }
+  }
   let pv = 0;
   let vol = 0;
   let day = "";
   for (const c of candles) {
-    const key = new Date(c.time * 1000).toISOString().slice(0, 10);
+    const date = new Date(c.time * 1000);
+    const key = fmt ? fmt.format(date) : date.toISOString().slice(0, 10);
     if (key !== day) {
       pv = 0;
       vol = 0;
@@ -100,31 +133,24 @@ export function macd(
   slow = 26,
   signalPeriod = 9,
 ): MacdPoint[] {
-  const fastEma = ema(candles, fast);
-  const slowEma = ema(candles, slow);
-  const slowMap = new Map(slowEma.map((p) => [p.time, p.value]));
-  const macdLine: LinePoint[] = [];
-  for (const p of fastEma) {
-    const s = slowMap.get(p.time);
-    if (s === undefined) continue;
-    macdLine.push({ time: p.time, value: p.value - s });
+  const closes = candles.map((c) => c.close);
+  const fastEma = emaValues(closes, fast);
+  const slowEma = emaValues(closes, slow);
+  const times: number[] = [];
+  const line: number[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const f = fastEma[i];
+    const s = slowEma[i];
+    if (f === null || s === null) continue;
+    times.push(candles[i].time);
+    line.push(f - s);
   }
-  if (!macdLine.length) return [];
-  const k = 2 / (signalPeriod + 1);
-  let prev = macdLine[0].value;
+  const signal = emaValues(line, signalPeriod);
   const out: MacdPoint[] = [];
-  for (let i = 0; i < macdLine.length; i++) {
-    const macdValue = macdLine[i].value;
-    const signal = macdValue * k + prev * (1 - k);
-    prev = signal;
-    if (i >= signalPeriod - 1) {
-      out.push({
-        time: macdLine[i].time,
-        macd: macdValue,
-        signal,
-        hist: macdValue - signal,
-      });
-    }
+  for (let i = 0; i < line.length; i++) {
+    const sig = signal[i];
+    if (sig === null) continue;
+    out.push({ time: times[i], macd: line[i], signal: sig, hist: line[i] - sig });
   }
   return out;
 }
@@ -133,6 +159,6 @@ export function volumePoints(candles: Candle[]) {
   return candles.map((c) => ({
     time: c.time,
     value: c.volume,
-    color: c.close >= c.open ? "rgba(61, 201, 138, 0.45)" : "rgba(224, 90, 90, 0.45)",
+    color: c.close >= c.open ? "rgba(8, 153, 129, 0.5)" : "rgba(242, 54, 69, 0.5)",
   }));
 }

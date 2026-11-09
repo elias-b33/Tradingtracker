@@ -155,6 +155,7 @@ async function spanPack(symbol: string): Promise<{ last: number; returns: SpanRe
     const returns: SpanReturnMap = {
       "1W": moveFrom(daily, last, spanStartMs("1W", now)),
       "1M": moveFrom(daily, last, spanStartMs("1M", now)),
+      "3M": moveFrom(daily, last, spanStartMs("3M", now)),
       "6M": moveFrom(daily, last, spanStartMs("6M", now)),
       YTD: moveFrom(daily, last, spanStartMs("YTD", now)),
       "1Y": moveFrom(daily, last, spanStartMs("1Y", now)),

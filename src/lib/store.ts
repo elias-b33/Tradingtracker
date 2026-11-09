@@ -10,6 +10,7 @@ import {
   type IndicatorsState,
   type IntervalId,
   type MobileTab,
+  type PriceScaleMode,
   type PriceAlert,
   type Quote,
   type SpanId,
@@ -23,6 +24,8 @@ import {
   DEFAULT_STOCKS_SLICE,
   type VenueSlice,
 } from "@/lib/market/venue";
+
+export type RightPanel = "watchlist" | "alerts" | "news" | "book" | "tape" | "desk";
 
 export type CloudStatus = "guest" | "loading" | "synced" | "saving" | "error";
 
@@ -57,6 +60,15 @@ interface TerminalState extends DeskPayload {
   mobileTab: MobileTab;
   sideTab: "news" | "book" | "tape" | "desk";
   cloudStatus: CloudStatus;
+  /** Chart preferences kept on this device only. */
+  extendedHours: boolean;
+  priceScaleMode: PriceScaleMode;
+  autoScale: boolean;
+  rightPanel: RightPanel | null;
+  setRightPanel: (panel: RightPanel | null) => void;
+  setExtendedHours: (on: boolean) => void;
+  setPriceScaleMode: (mode: PriceScaleMode) => void;
+  setAutoScale: (on: boolean) => void;
   setSymbol: (symbol: string) => void;
   setInterval: (interval: IntervalId) => void;
   setSpan: (span: SpanId) => void;
@@ -65,6 +77,7 @@ interface TerminalState extends DeskPayload {
   setDrawingTool: (drawingTool: DrawingTool) => void;
   addDrawing: (drawing: StoredDrawing) => void;
   clearDrawings: () => void;
+  undoDrawing: () => void;
   addToWatchlist: (symbol: string) => void;
   removeFromWatchlist: (symbol: string) => void;
   patchQuote: (quote: Quote) => void;
@@ -152,6 +165,14 @@ export const useTerminalStore = create<TerminalState>()(
       mobileTab: "chart",
       sideTab: "news",
       cloudStatus: "guest",
+      extendedHours: true,
+      priceScaleMode: "normal",
+      autoScale: true,
+      rightPanel: "watchlist",
+      setRightPanel: (rightPanel) => set({ rightPanel }),
+      setExtendedHours: (extendedHours) => set({ extendedHours }),
+      setPriceScaleMode: (priceScaleMode) => set({ priceScaleMode }),
+      setAutoScale: (autoScale) => set({ autoScale }),
       setSymbol: (symbol) =>
         set((s) => {
           const watchlist = s.watchlist.includes(symbol)
@@ -185,12 +206,14 @@ export const useTerminalStore = create<TerminalState>()(
             interval: next.interval,
             mobileTab: s.mobileTab === "book" && venue === "stocks" ? "watch" : s.mobileTab,
             sideTab: venue === "stocks" && s.sideTab === "tape" ? "news" : s.sideTab,
+            rightPanel: venue === "stocks" && s.rightPanel === "tape" ? "watchlist" : s.rightPanel,
           };
         }),
       setInterval: (interval) =>
         set((s) => ({
           interval,
-          desks: { ...s.desks, [s.venue]: { ...s.desks[s.venue], interval } },
+          span: null,
+          desks: { ...s.desks, [s.venue]: { ...s.desks[s.venue], interval, span: null } },
         })),
       setSpan: (span) =>
         set((s) => {
@@ -212,6 +235,10 @@ export const useTerminalStore = create<TerminalState>()(
         }),
       clearDrawings: () =>
         set((s) => ({ drawings: { ...s.drawings, [s.symbol]: [] } })),
+      undoDrawing: () =>
+        set((s) => ({
+          drawings: { ...s.drawings, [s.symbol]: (s.drawings[s.symbol] ?? []).slice(0, -1) },
+        })),
       addToWatchlist: (symbol) =>
         set((s) => {
           if (s.watchlist.includes(symbol) || s.watchlist.length >= 80) return s;
@@ -464,6 +491,9 @@ export const useTerminalStore = create<TerminalState>()(
         holdings: s.holdings,
         alertLog: s.alertLog,
         sideTab: s.sideTab,
+        extendedHours: s.extendedHours,
+        priceScaleMode: s.priceScaleMode,
+        rightPanel: s.rightPanel,
       }),
     },
   ),

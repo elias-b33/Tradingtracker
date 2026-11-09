@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
-import { DEFAULT_INDICATORS } from "@/lib/market/types";
+import { DEFAULT_INDICATORS, SPAN_IDS } from "@/lib/market/types";
 import type { DeskPayload } from "@/lib/store";
 import { DEFAULT_CRYPTO_SLICE, DEFAULT_STOCKS_SLICE } from "@/lib/market/venue";
 
@@ -29,7 +29,7 @@ const drawingSchema = z.discriminatedUnion("kind", [
 const venueSlice = z.object({
   symbol: z.string().min(1).max(32),
   watchlist: z.array(z.string().min(1).max(32)).max(80),
-  span: z.enum(["1D", "1W", "1M", "6M", "YTD", "1Y", "5Y", "ALL"]).nullable(),
+  span: z.enum(SPAN_IDS).nullable(),
   interval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d", "1w"]),
 });
 
@@ -43,8 +43,8 @@ const deskSchema = z.object({
     .optional(),
   symbol: z.string().min(1).max(32),
   interval: z.enum(["1m", "5m", "15m", "1h", "4h", "1d", "1w"]),
-  span: z.enum(["1D", "1W", "1M", "6M", "YTD", "1Y", "5Y", "ALL"]).nullable().optional(),
-  chartType: z.enum(["candles", "line", "area"]),
+  span: z.enum(SPAN_IDS).nullable().optional(),
+  chartType: z.enum(["candles", "hollow", "bars", "line", "area", "baseline"]),
   indicators: z.object({
     sma20: z.boolean(),
     sma50: z.boolean(),

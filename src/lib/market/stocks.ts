@@ -162,6 +162,62 @@ function quoteFromMeta(symbol: string, meta: SparkMeta, source: Quote["source"])
   return quote;
 }
 
+type TradingWindow = { start: number; end: number };
+
+/**
+ * Latest pre-market / after-hours print from an intraday series fetched with
+ * `includePrePost=true`. Changes are measured from the regular-session price,
+ * the same reference TradingView uses for its extended-hours line.
+ */
+export function extendedQuoteFields(
+  meta: Pick<SparkMeta, "regularMarketPrice" | "currentTradingPeriod">,
+  timestamps: number[] | undefined,
+  closes: Array<number | null> | undefined,
+): Pick<Quote, "extSession" | "extPrice" | "extChange" | "extChangePercent" | "extTime"> {
+  const period = meta.currentTradingPeriod;
+  const regular = period?.regular;
+  const base = Number(meta.regularMarketPrice);
+  if (!regular || !timestamps?.length || !closes?.length || !(base > 0)) return {};
+  let idx = Math.min(timestamps.length, closes.length) - 1;
+  while (idx >= 0 && !Number.isFinite(Number(closes[idx] ?? NaN))) idx -= 1;
+  if (idx < 0) return {};
+  const time = timestamps[idx];
+  const price = Number(closes[idx]);
+  const inWindow = (w?: TradingWindow) => !!w && time >= w.start && time < w.end;
+  const session = inWindow(period?.post) || (time >= regular.end && !period?.post)
+    ? "post"
+    : inWindow(period?.pre)
+      ? "pre"
+      : null;
+  if (!session || !(price > 0)) return {};
+  return {
+    extSession: session,
+    extPrice: price,
+    extChange: price - base,
+    extChangePercent: ((price - base) / base) * 100,
+    extTime: time,
+  };
+}
+
+/** Tag intraday candles that fall outside the listing's regular session. */
+export function tagExtendedSessions(
+  candles: Candle[],
+  periods: { pre?: TradingWindow[]; regular?: TradingWindow[]; post?: TradingWindow[] },
+): Candle[] {
+  const regular = periods.regular ?? [];
+  if (!regular.length) return candles;
+  const pre = periods.pre ?? [];
+  const post = periods.post ?? [];
+  const within = (list: TradingWindow[], t: number) => list.some((w) => t >= w.start && t < w.end);
+  return candles.map((c) => {
+    if (within(regular, c.time)) return c;
+    if (within(pre, c.time)) return { ...c, session: "pre" as const };
+    if (within(post, c.time)) return { ...c, session: "post" as const };
+    // Bars between windows (e.g. a 60m bar straddling the open) count as regular.
+    return c;
+  });
+}
+
 type UsQuoteCfg = { kind: "finnhub"; key: string } | { kind: "alpaca"; id: string; secret: string };
 
 function usQuoteConfig(): UsQuoteCfg | null {
@@ -293,15 +349,32 @@ async function sparkQuotes(symbols: string[]): Promise<Quote[]> {
   if (!symbols.length) return [];
   return cached(`yf-spark:${symbols.join(",")}`, 4500, async () => {
     const param = encodeURIComponent(symbols.join(","));
-    const json = (await yahoo(`/v7/finance/spark?symbols=${param}&range=1d&interval=1d`)) as {
-      spark?: { result?: Array<{ symbol: string; response?: Array<{ meta?: SparkMeta }> }> };
+    const json = (await yahoo(
+      `/v7/finance/spark?symbols=${param}&range=1d&interval=5m&includePrePost=true`,
+    )) as {
+      spark?: {
+        result?: Array<{
+          symbol: string;
+          response?: Array<{
+            meta?: SparkMeta;
+            timestamp?: number[];
+            indicators?: { quote?: Array<{ close?: Array<number | null> }> };
+          }>;
+        }>;
+      };
     };
     const quotes: Quote[] = [];
     for (const row of json.spark?.result ?? []) {
-      const meta = row.response?.[0]?.meta;
+      const response = row.response?.[0];
+      const meta = response?.meta;
       if (!meta) continue;
       const q = quoteFromMeta(row.symbol, meta, "yahoo");
-      if (q) quotes.push(q);
+      if (!q) continue;
+      Object.assign(
+        q,
+        extendedQuoteFields(meta, response?.timestamp, response?.indicators?.quote?.[0]?.close),
+      );
+      quotes.push(q);
     }
     return quotes;
   });
@@ -312,35 +385,51 @@ const YF_INTERVAL: Record<IntervalId, { interval: string; range: string }> = {
   "5m": { interval: "5m", range: "1mo" },
   "15m": { interval: "15m", range: "1mo" },
   "1h": { interval: "60m", range: "3mo" },
-  "4h": { interval: "60m", range: "6mo" },
+  "4h": { interval: "60m", range: "1y" },
   "1d": { interval: "1d", range: "5y" },
   "1w": { interval: "1wk", range: "max" },
 };
 
-function rangeForSpan(
+const SPAN_RANGE: Record<SpanId, string> = {
+  "1D": "1d",
+  "1W": "5d",
+  "1M": "1mo",
+  "3M": "3mo",
+  "6M": "6mo",
+  YTD: "ytd",
+  "1Y": "1y",
+  "5Y": "5y",
+  ALL: "max",
+};
+
+/** Yahoo's longest range per intraday granularity, ordered from finest. */
+const RANGE_ORDER = ["1d", "5d", "1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y", "10y", "max"];
+const MAX_RANGE: Record<string, string> = {
+  "1m": "5d",
+  "5m": "1mo",
+  "15m": "1mo",
+  "60m": "2y",
+  "1d": "max",
+  "1wk": "max",
+};
+const COARSER: Record<string, string> = { "1m": "5m", "5m": "15m", "15m": "60m", "60m": "1d", "1d": "1wk" };
+
+export function rangeForSpan(
   span: SpanId | null | undefined,
   interval: IntervalId,
 ): { interval: string; range: string } {
   if (!span) return YF_INTERVAL[interval];
-  switch (span) {
-    case "1D":
-      return { interval: "5m", range: "1d" };
-    case "1W":
-      return { interval: "60m", range: "1mo" };
-    case "1M":
-      return { interval: "60m", range: "3mo" };
-    case "6M":
-      return { interval: "1d", range: "1y" };
-    case "YTD":
-      return { interval: "1d", range: "ytd" };
-    case "1Y":
-      return { interval: "1d", range: "1y" };
-    case "5Y":
-      return { interval: "1wk", range: "5y" };
-    case "ALL":
-      return { interval: "1wk", range: "max" };
+  const range = SPAN_RANGE[span];
+  // Honour the chosen candle size, stepping coarser only when Yahoo cannot
+  // serve that granularity for the whole range.
+  let yf = YF_INTERVAL[interval].interval;
+  while (RANGE_ORDER.indexOf(range) > RANGE_ORDER.indexOf(MAX_RANGE[yf] ?? "max") && COARSER[yf]) {
+    yf = COARSER[yf];
   }
+  return { interval: yf, range };
 }
+
+const INTRADAY = new Set(["1m", "5m", "15m", "60m"]);
 
 type YahooChartData = {
   candles: Candle[];
@@ -354,7 +443,12 @@ function parseChart(json: unknown): YahooChartData {
   const ts = (result.timestamp as number[] | undefined) ?? [];
   const quote = (result.indicators as { quote?: Array<Record<string, Array<number | null>>> })
     ?.quote?.[0];
-  const meta = result.meta as { exchangeTimezoneName?: string } | undefined;
+  const meta = result.meta as
+    | {
+        exchangeTimezoneName?: string;
+        tradingPeriods?: Record<string, TradingWindow[][] | TradingWindow[]>;
+      }
+    | undefined;
   const timeZone = meta?.exchangeTimezoneName || "UTC";
   if (!quote) return { candles: [], timeZone };
   const candles: Candle[] = [];
@@ -372,6 +466,19 @@ function parseChart(json: unknown): YahooChartData {
       close,
       volume: Number(quote.volume?.[i]) || 0,
     });
+  }
+  const tp = meta?.tradingPeriods;
+  if (tp && !Array.isArray(tp) && tp.pre && tp.post) {
+    const flat = (v?: TradingWindow[][] | TradingWindow[]) =>
+      (v ?? []).flat() as TradingWindow[];
+    return {
+      candles: tagExtendedSessions(candles, {
+        pre: flat(tp.pre),
+        regular: flat(tp.regular),
+        post: flat(tp.post),
+      }),
+      timeZone,
+    };
   }
   return { candles, timeZone };
 }
@@ -450,9 +557,10 @@ async function fetchChartData(
   symbol: string,
   interval: string,
   range: string,
+  prePost = false,
 ): Promise<YahooChartData> {
-  const path = `/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}&includePrePost=false`;
-  return cached(`yf:${symbol}:${interval}:${range}`, 20_000, async () => {
+  const path = `/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}&includePrePost=${prePost}`;
+  return cached(`yf:${symbol}:${interval}:${range}:${prePost ? "eth" : "rth"}`, 20_000, async () => {
     const json = await yahoo(path);
     return parseChart(json);
   });
@@ -479,6 +587,25 @@ export function mergeStockQuotes(
   if (!preferred) return fallback;
   if (!fallback) {
     return { ...preferred, freshness: deriveQuoteFreshness(preferred, nowSeconds) };
+  }
+  // Outside regular hours a provider print is an extended-hours trade. Keep the
+  // regular close as the headline price and surface the print separately.
+  if (fallback.marketState && fallback.marketState !== "regular") {
+    const ts = preferred.lastTime ?? 0;
+    const session = fallback.marketState === "pre" ? "pre" : "post";
+    const base = fallback.lastPrice;
+    const newer = ts > (fallback.extTime ?? 0) && fallback.marketState !== "closed";
+    if (!newer || !(base > 0)) return fallback;
+    const merged: Quote = {
+      ...fallback,
+      extSession: session,
+      extPrice: preferred.lastPrice,
+      extChange: preferred.lastPrice - base,
+      extChangePercent: ((preferred.lastPrice - base) / base) * 100,
+      extTime: ts,
+    };
+    merged.freshness = deriveQuoteFreshness(merged, nowSeconds);
+    return merged;
   }
   const previousClose = fallback.openPrice || preferred.openPrice || preferred.lastPrice;
   const merged: Quote = {
@@ -550,19 +677,25 @@ export const getStockTickers = createServerFn({ method: "GET" })
   );
 
 export const getStockKlines = createServerFn({ method: "GET" })
-  .validator((input: { symbol: string; interval: IntervalId; span?: SpanId | null }) => ({
-    symbol: sanitizeMarketSymbol(input.symbol, "stocks"),
-    interval: input.interval,
-    span: input.span ?? null,
-  }))
+  .validator(
+    (input: { symbol: string; interval: IntervalId; span?: SpanId | null; extended?: boolean }) => ({
+      symbol: sanitizeMarketSymbol(input.symbol, "stocks"),
+      interval: input.interval,
+      span: input.span ?? null,
+      extended: input.extended === true,
+    }),
+  )
   .handler(
     async ({ data }): Promise<{ ok: true; candles: Candle[] } | { ok: false; error: string }> => {
       try {
         await guardPublicRequest("klines", 120);
         const spec = rangeForSpan(data.span, data.interval);
-        const chart = await fetchChartData(data.symbol, spec.interval, spec.range);
+        // Extended hours only make sense on intraday bars below 4H, matching
+        // TradingView's "Extended trading hours" chart setting.
+        const prePost = data.extended && data.interval !== "4h" && INTRADAY.has(spec.interval);
+        const chart = await fetchChartData(data.symbol, spec.interval, spec.range, prePost);
         const candles =
-          data.interval === "4h" && (spec.interval === "5m" || spec.interval === "60m")
+          data.interval === "4h" && INTRADAY.has(spec.interval)
             ? aggregateStockCandles(chart.candles, 4 * 60 * 60, chart.timeZone)
             : chart.candles;
         if (!candles.length) return { ok: false, error: "No stock history for this symbol." };
@@ -601,6 +734,7 @@ export const getStockSpanReturns = createServerFn({ method: "GET" })
           returns: {
             "1W": moveFrom(daily, last, spanStartMs("1W", now)),
             "1M": moveFrom(daily, last, spanStartMs("1M", now)),
+            "3M": moveFrom(daily, last, spanStartMs("3M", now)),
             "6M": moveFrom(daily, last, spanStartMs("6M", now)),
             YTD: moveFrom(daily, last, spanStartMs("YTD", now)),
             "1Y": moveFrom(daily, last, spanStartMs("1Y", now)),

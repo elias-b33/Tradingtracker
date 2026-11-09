@@ -2,30 +2,38 @@ export const INTERVALS = [
   { id: "1m", label: "1m", key: "1" },
   { id: "5m", label: "5m", key: "2" },
   { id: "15m", label: "15m", key: "3" },
-  { id: "1h", label: "1H", key: "4" },
-  { id: "4h", label: "4H", key: "5" },
-  { id: "1d", label: "1D", key: "6" },
-  { id: "1w", label: "1W", key: "7" },
+  { id: "1h", label: "1h", key: "4" },
+  { id: "4h", label: "4h", key: "5" },
+  { id: "1d", label: "D", key: "6" },
+  { id: "1w", label: "W", key: "7" },
 ] as const;
 
 export type IntervalId = (typeof INTERVALS)[number]["id"];
 
 export const SPANS = [
-  { id: "1D", label: "Day", title: "Today" },
-  { id: "1W", label: "Week", title: "1 week" },
-  { id: "1M", label: "Month", title: "1 month" },
+  { id: "1D", label: "1D", title: "1 day" },
+  { id: "1W", label: "5D", title: "5 days" },
+  { id: "1M", label: "1M", title: "1 month" },
+  { id: "3M", label: "3M", title: "3 months" },
   { id: "6M", label: "6M", title: "6 months" },
-  { id: "YTD", label: "YTD", title: "This year" },
+  { id: "YTD", label: "YTD", title: "Year to date" },
   { id: "1Y", label: "1Y", title: "1 year" },
   { id: "5Y", label: "5Y", title: "5 years" },
-  { id: "ALL", label: "ALL", title: "All time" },
+  { id: "ALL", label: "All", title: "All time" },
 ] as const;
+
+export const SPAN_IDS = ["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "5Y", "ALL"] as const;
 
 export type SpanId = (typeof SPANS)[number]["id"];
 
 export type VenueId = "crypto" | "stocks";
 
-export type ChartType = "candles" | "line" | "area";
+export type ChartType = "candles" | "hollow" | "bars" | "line" | "area" | "baseline";
+
+export type PriceScaleMode = "normal" | "log" | "percent";
+
+/** Trading session a bar or quote belongs to. Undefined means regular hours. */
+export type MarketSession = "pre" | "post";
 
 export type DrawingTool = "cursor" | "hline" | "trend" | "fib";
 
@@ -38,6 +46,8 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
+  /** Extended-hours bar (stocks only). */
+  session?: MarketSession;
 }
 
 export type QuoteSource =
@@ -79,6 +89,12 @@ export interface Quote {
   priceHint?: number;
   sessionStart?: number;
   sessionEnd?: number;
+  /** Latest pre-market or after-hours print, relative to the regular close. */
+  extSession?: MarketSession;
+  extPrice?: number;
+  extChange?: number;
+  extChangePercent?: number;
+  extTime?: number;
 }
 
 export interface DepthLevel {

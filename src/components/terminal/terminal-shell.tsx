@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { toast } from "sonner";
@@ -10,22 +10,21 @@ import { formatPct, formatPrice } from "@/lib/market/format";
 import { pairLabel } from "@/lib/market/symbols";
 import { connectTickerStream } from "@/lib/market/ws";
 import { deskNotify } from "@/lib/notify";
-import { cn } from "@/lib/utils";
 import { useLayoutMode } from "@/hooks/use-is-desktop";
 import { useTerminalStore } from "@/lib/store";
-import { Header } from "./header";
-import { TickerBar } from "./ticker-bar";
 import { ChartView } from "./chart-view";
 import { Watchlist } from "./watchlist";
-import { MarketSide, OrderBook } from "./market-side";
-import { StatsBar } from "./stats-bar";
+import { OrderBook } from "./market-side";
 import { MobileNav } from "./mobile-nav";
 import { AccountCard } from "./account-slot";
 import { DeskSync } from "./desk-sync";
 import { NewsPanel } from "./news-panel";
 import { SymbolSearch } from "./symbol-search";
 import { BriefingSheet } from "./briefing-sheet";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ChartToolbar, PhoneChartToolbar, QuoteStrip } from "./chart-toolbar";
+import { ChartBottomBar, PhoneBottomBar } from "./chart-bottom-bar";
+import { DrawingToolbar, PhoneDrawingButton } from "./drawing-toolbar";
+import { RightPanelContent, RightRail } from "./right-panel";
 
 export function TerminalShell() {
   useEffect(() => {
@@ -92,105 +91,77 @@ export function TerminalShell() {
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-bg text-fg">
       <DeskSync />
       <BriefingSheet />
-      <div className="shrink-0">
-        <Header />
-        {layout === "desktop" && <TickerBar />}
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col">
-        {layout === "desktop" && <DesktopDesk />}
-        {layout === "tablet" && <TabletDesk />}
-        {layout === "phone" && <PhoneDesk tab={mobileTab} />}
-        {!layout && <div className="min-h-0 flex-1 bg-surface" />}
-      </div>
+      {layout === "phone" ? (
+        <PhoneDesk tab={mobileTab} />
+      ) : layout ? (
+        <WideDesk tablet={layout === "tablet"} />
+      ) : (
+        <div className="min-h-0 flex-1 bg-bg" />
+      )}
       {layout === "phone" && <MobileNav />}
       <SymbolSearch />
     </div>
   );
 }
 
-function DesktopDesk() {
+function WideDesk({ tablet }: { tablet: boolean }) {
+  const rightPanel = useTerminalStore((s) => s.rightPanel);
   return (
-    <Group orientation="horizontal" className="h-full w-full" id="desk">
-      <Panel id="watch" defaultSize="18%" minSize="14%" maxSize="28%" className="min-w-0">
-        <Watchlist />
-      </Panel>
-      <Separator className="w-1 bg-border hover:bg-accent/30" />
-      <Panel id="chart" minSize="40%" className="min-w-0">
-        <div className="flex h-full min-h-0 flex-col bg-surface">
-          <ChartView />
-          <StatsBar />
-        </div>
-      </Panel>
-      <Separator className="w-1 bg-border hover:bg-accent/30" />
-      <Panel id="book" defaultSize="22%" minSize="16%" maxSize="34%" className="min-w-0">
-        <MarketSide />
-      </Panel>
-    </Group>
-  );
-}
-
-function TabletDesk() {
-  const [rail, setRail] = useState<"markets" | "news" | "book">("markets");
-  const venue = useTerminalStore((s) => s.venue);
-
-  return (
-    <Group orientation="horizontal" className="h-full w-full" id="tablet-desk">
-      <Panel id="chart" defaultSize="68%" minSize="48%" className="min-w-0">
-        <div className="flex h-full min-h-0 flex-col bg-surface">
-          <ChartView />
-          <StatsBar />
-        </div>
-      </Panel>
-      <Separator className="w-2 bg-border hover:bg-accent/40" />
-      <Panel id="rail" defaultSize="32%" minSize="24%" maxSize="42%" className="min-w-0">
-        <Tabs
-          value={rail}
-          onValueChange={(value) => setRail(value as "markets" | "news" | "book")}
-          className="flex h-full min-h-0 flex-col bg-surface"
+    <div className="flex min-h-0 flex-1 flex-col gap-1 bg-gap">
+      <ChartToolbar />
+      <div className="flex min-h-0 flex-1 gap-1">
+        <DrawingToolbar />
+        <Group
+          key={rightPanel ? "with-panel" : "chart-only"}
+          orientation="horizontal"
+          className="h-full min-w-0 flex-1"
+          id="desk-v2"
         >
-          <div className="shrink-0 border-b border-border px-2 py-1">
-            <TabsList>
-              <TabsTrigger value="markets">Markets</TabsTrigger>
-              <TabsTrigger value="news">News</TabsTrigger>
-              <TabsTrigger value="book">{venue === "stocks" ? "Session" : "Book"}</TabsTrigger>
-            </TabsList>
-          </div>
-          <TabsContent value="markets" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <Watchlist />
-          </TabsContent>
-          <TabsContent value="news" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <NewsPanel scope="desk" />
-          </TabsContent>
-          <TabsContent value="book" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <OrderBook />
-          </TabsContent>
-        </Tabs>
-      </Panel>
-    </Group>
+          <Panel id="chart" minSize="45%" className="min-w-0">
+            <div className="flex h-full min-h-0 flex-col bg-bg">
+              <ChartView />
+              <ChartBottomBar />
+            </div>
+          </Panel>
+          {rightPanel && (
+            <>
+              <Separator className="w-1 bg-gap hover:bg-accent/40" />
+              <Panel
+                id="side"
+                defaultSize={tablet ? "38%" : "24%"}
+                minSize={tablet ? "28%" : "16%"}
+                maxSize="45%"
+                className="min-w-0"
+              >
+                <RightPanelContent />
+              </Panel>
+            </>
+          )}
+        </Group>
+        <RightRail />
+      </div>
+    </div>
   );
 }
 
 function PhoneDesk({ tab }: { tab: string }) {
-  const pane = useTerminalStore((s) => s.phonePane);
-  const setPhonePane = useTerminalStore((s) => s.setPhonePane);
-
   if (tab === "watch") {
     return (
-      <div className="h-full min-h-0">
+      <div className="desk-header min-h-0 flex-1">
         <Watchlist />
       </div>
     );
   }
   if (tab === "book") {
     return (
-      <div className="h-full min-h-0">
+      <div className="desk-header min-h-0 flex-1">
         <OrderBook />
       </div>
     );
   }
   if (tab === "more") {
     return (
-      <div className="flex h-full min-h-0 flex-col bg-bg">
+      <div className="desk-header flex min-h-0 flex-1 flex-col bg-bg">
         <div className="shrink-0 border-b border-border p-3">
           <AccountCard />
         </div>
@@ -201,36 +172,14 @@ function PhoneDesk({ tab }: { tab: string }) {
     );
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-bg">
-      <div className="flex shrink-0 border-b border-border px-2 py-1">
-        <button
-          type="button"
-          onClick={() => setPhonePane("plot")}
-          className={cn(
-            "min-h-10 rounded-md px-3 text-sm",
-            pane === "plot" ? "bg-elevated text-fg" : "text-muted",
-          )}
-        >
-          Overview
-        </button>
-        <button
-          type="button"
-          onClick={() => setPhonePane("news")}
-          className={cn(
-            "min-h-10 rounded-md px-3 text-sm",
-            pane === "news" ? "bg-elevated text-fg" : "text-muted",
-          )}
-        >
-          News
-        </button>
-      </div>
-      {pane === "news" ? (
-        <div className="min-h-0 flex-1">
-          <NewsPanel scope="symbol" />
-        </div>
-      ) : (
+    <div className="desk-header flex min-h-0 flex-1 flex-col bg-bg">
+      <PhoneChartToolbar />
+      <QuoteStrip />
+      <div className="relative flex min-h-0 flex-1 flex-col">
         <ChartView />
-      )}
+        <PhoneDrawingButton />
+      </div>
+      <PhoneBottomBar />
     </div>
   );
 }
@@ -239,6 +188,7 @@ function useKeyboard() {
   const setSearchOpen = useTerminalStore((s) => s.setSearchOpen);
   const setInterval = useTerminalStore((s) => s.setInterval);
   const setDrawingTool = useTerminalStore((s) => s.setDrawingTool);
+  const undoDrawing = useTerminalStore((s) => s.undoDrawing);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -253,6 +203,12 @@ function useKeyboard() {
         return;
       }
       if (typing) return;
+      if (event.key === "z" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        undoDrawing();
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === "/") {
         event.preventDefault();
         setSearchOpen(true);
@@ -266,7 +222,7 @@ function useKeyboard() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setSearchOpen, setInterval, setDrawingTool]);
+  }, [setSearchOpen, setInterval, setDrawingTool, undoDrawing]);
 }
 
 function useAlertWatcher() {

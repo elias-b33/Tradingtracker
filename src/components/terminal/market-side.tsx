@@ -222,7 +222,7 @@ function DepthRow({
   );
 }
 
-function TradesTape() {
+export function TradesTape() {
   const symbol = useTerminalStore((s) => s.symbol);
   const query = useQuery({
     queryKey: ["trades", symbol],
