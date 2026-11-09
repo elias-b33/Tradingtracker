@@ -51,8 +51,9 @@ describe("market calculations", () => {
   });
 
   it("maps chart spans to sensible candle intervals", () => {
-    expect(recommendedInterval("1D")).toBe("15m");
-    expect(recommendedInterval("6M")).toBe("4h");
+    expect(recommendedInterval("1D")).toBe("5m");
+    expect(recommendedInterval("3M")).toBe("4h");
+    expect(recommendedInterval("6M")).toBe("1d");
     expect(recommendedInterval("5Y")).toBe("1w");
   });
 

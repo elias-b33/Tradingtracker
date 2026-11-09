@@ -2,47 +2,52 @@
 @import "tw-animate-css";
 
 @theme {
-  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
+  --font-mono: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
 
+  /* TradingView dark theme */
   --color-bg: #000000;
-  --color-surface: #131722;
-  --color-elevated: #1e222d;
-  --color-fg: #d1d4dc;
-  --color-muted: #787b86;
-  --color-subtle: #7d8491;
-  --color-border: rgb(255 255 255 / 0.08);
-  --color-border-strong: rgb(255 255 255 / 0.14);
-  --color-accent: #376cf0;
+  --color-surface: #000000;
+  --color-elevated: #1e1e1e;
+  --color-hover: #2a2a2a;
+  --color-fg: #dbdbdb;
+  --color-strong: #ffffff;
+  --color-muted: #8c8c8c;
+  --color-secondary-fg: #b8b8b8;
+  --color-subtle: #5d606b;
+  --color-border: #2e2e2e;
+  --color-border-strong: #3d3d3d;
+  --color-gap: #222222;
+  --color-accent: #2962ff;
   --color-accent-fg: #ffffff;
   --color-up: #089981;
   --color-down: #f23645;
   --color-warn: #ff9800;
 
   --color-background: #000000;
-  --color-foreground: #d1d4dc;
-  --color-card: #131722;
-  --color-card-foreground: #d1d4dc;
-  --color-popover: #1e222d;
-  --color-popover-foreground: #d1d4dc;
-  --color-primary: #376cf0;
+  --color-foreground: #dbdbdb;
+  --color-card: #000000;
+  --color-card-foreground: #dbdbdb;
+  --color-popover: #1e1e1e;
+  --color-popover-foreground: #dbdbdb;
+  --color-primary: #2962ff;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #1e222d;
-  --color-secondary-foreground: #d1d4dc;
-  --color-muted-foreground: #787b86;
+  --color-secondary: #1e1e1e;
+  --color-secondary-foreground: #dbdbdb;
+  --color-muted-foreground: #8c8c8c;
   --color-accent-foreground: #ffffff;
   --color-destructive: #f23645;
-  --color-input: rgb(255 255 255 / 0.08);
-  --color-ring: #376cf0;
+  --color-input: #2e2e2e;
+  --color-ring: #2962ff;
 
   --radius-xs: 0.25rem;
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
 
-  --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.06);
-  --shadow-header: 0 1px 0 rgb(255 255 255 / 0.06);
+  --shadow-border: 0 0 0 1px #2e2e2e, 0 4px 16px rgb(0 0 0 / 0.5);
+  --shadow-header: 0 1px 0 #2e2e2e;
 }
 
 @layer base {
@@ -72,6 +77,13 @@
 
   * {
     border-color: var(--color-border);
+    scrollbar-color: #3d3d3d transparent;
+    scrollbar-width: thin;
+  }
+
+  .tabular-nums,
+  .font-mono {
+    font-variant-numeric: tabular-nums;
   }
 
   h1,
