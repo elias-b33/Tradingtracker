@@ -1,13 +1,17 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bell,
   Check,
   ChevronDown,
-  MoreHorizontal,
+  Camera,
+  Maximize,
+  Menu,
+  Minimize,
   Plus,
+  Redo2,
   Search,
-  Sun,
-  Moon,
+  Settings,
+  Undo2,
 } from "lucide-react";
 import {
   Dialog,
@@ -27,13 +31,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 import { INTERVALS } from "@/lib/market/types";
 import { CHART_TYPES, INDICATOR_ITEMS } from "./chart-options";
-import { formatPct, formatPrice } from "@/lib/market/format";
-import { baseAsset } from "@/lib/market/symbols";
 import { useTerminalStore } from "@/lib/store";
 import { AccountSlot } from "./account-slot";
 import { AlertsPanel } from "./alerts-panel";
-import { CoinIcon } from "./coin-icon";
 import { VenueSwitch } from "./venue-switch";
+import { ChartSettingsDialog } from "./chart-settings";
 import { ChartTypeIcon, IndicatorsIcon } from "./tv-icons";
 
 const INTERVAL_GROUPS: Array<{ label: string; ids: string[] }> = [
@@ -59,28 +61,19 @@ function ToolbarDivider() {
 const tbButton =
   "flex h-[30px] shrink-0 items-center gap-1.5 rounded-[4px] px-2 text-[14px] text-fg hover:bg-hover disabled:opacity-40";
 
-function SymbolButton({ compact = false }: { compact?: boolean }) {
+/** TradingView symbol pill: full ticker plus a round search badge. */
+function SymbolButton() {
   const symbol = useTerminalStore((s) => s.symbol);
-  const venue = useTerminalStore((s) => s.venue);
   const setSearchOpen = useTerminalStore((s) => s.setSearchOpen);
-  const label = venue === "stocks" ? symbol : baseAsset(symbol);
   return (
     <button
       type="button"
       onClick={() => setSearchOpen(true)}
       aria-label={`Symbol search. Current symbol ${symbol}`}
-      className={cn(
-        tbButton,
-        "rounded-full bg-[#2a2a2a] pr-1 pl-1.5 font-semibold text-strong hover:bg-[#363636]",
-        compact && "min-w-0",
-      )}
+      className="ml-1 flex h-[30px] min-w-32 shrink-0 items-center justify-between gap-2 rounded-full bg-[#2a2a2a] pr-1 pl-3 text-[14px] font-semibold text-strong hover:bg-[#363636]"
     >
-      <CoinIcon symbol={symbol} size={compact ? 22 : 20} />
-      <span className="truncate">{label}</span>
-      {venue === "crypto" && !compact && (
-        <span className="font-normal text-muted">{symbol.slice(label.length)}</span>
-      )}
-      <span className="ml-0.5 flex size-[22px] items-center justify-center rounded-full bg-bg text-fg">
+      <span className="truncate">{symbol}</span>
+      <span className="flex size-[22px] items-center justify-center rounded-full bg-bg text-fg">
         <Search className="size-3" />
       </span>
     </button>
@@ -120,26 +113,6 @@ function IntervalMenu({ triggerClassName }: { triggerClassName?: string }) {
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-function IntervalFavorites() {
-  const interval = useTerminalStore((s) => s.interval);
-  const setInterval = useTerminalStore((s) => s.setInterval);
-  return (
-    <div className="flex items-center">
-      {INTERVALS.map((tf) => (
-        <button
-          key={tf.id}
-          type="button"
-          title={`${INTERVAL_NAMES[tf.id]} (${tf.key})`}
-          onClick={() => setInterval(tf.id)}
-          className={cn(tbButton, "px-1.5", interval === tf.id && "text-accent")}
-        >
-          {tf.label}
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -288,27 +261,73 @@ function AlertButton({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function useFullscreen() {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    const sync = () => setOn(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+  const toggle = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen?.().catch(() => {});
+  };
+  return { on, toggle };
+}
+
+function MainMenu({ onSettings }: { onSettings: () => void }) {
+  const drawingRail = useTerminalStore((s) => s.drawingRail);
+  const setDrawingRail = useTerminalStore((s) => s.setDrawingRail);
+  const setBriefingOpen = useTerminalStore((s) => s.setBriefingOpen);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label="Main menu" className={cn(tbButton, "px-1.5")}>
+          <Menu className="size-[22px]" strokeWidth={1.5} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-60">
+        <DropdownMenuItem onSelect={() => setBriefingOpen(true)}>Catch up on moves</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onSettings}>Chart settings…</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => setDrawingRail(!drawingRail)} className="justify-between">
+          Drawings toolbar
+          {drawingRail && <Check className="size-4" />}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /** Desktop/tablet top toolbar, TradingView layout. */
 export function ChartToolbar() {
   const setSearchOpen = useTerminalStore((s) => s.setSearchOpen);
+  const undoDrawing = useTerminalStore((s) => s.undoDrawing);
+  const redoDrawing = useTerminalStore((s) => s.redoDrawing);
+  const canUndo = useTerminalStore((s) => (s.drawings[s.symbol] ?? []).length > 0);
+  const canRedo = useTerminalStore((s) => (s.redoStack[s.symbol] ?? []).length > 0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const fullscreen = useFullscreen();
   return (
     <div className="flex h-[38px] min-w-0 shrink-0 items-center bg-bg px-1.5">
+      <MainMenu onSettings={() => setSettingsOpen(true)} />
       <SymbolButton />
       <ToolbarDivider />
-      <div className="hidden xl:flex">
-        <IntervalFavorites />
-      </div>
-      <div className="xl:hidden">
-        <IntervalMenu />
-      </div>
+      <IntervalMenu />
       <ToolbarDivider />
       <ChartTypeMenu />
       <ToolbarDivider />
       <IndicatorsButton />
       <ToolbarDivider />
       <AlertButton />
-      <div className="ml-auto flex items-center gap-1.5 pl-2">
-        <VenueSwitch />
+      <ToolbarDivider />
+      <button type="button" aria-label="Undo" title="Undo (Ctrl Z)" disabled={!canUndo} onClick={undoDrawing} className={cn(tbButton, "px-1.5")}>
+        <Undo2 className="size-[18px]" strokeWidth={1.5} />
+      </button>
+      <button type="button" aria-label="Redo" title="Redo" disabled={!canRedo} onClick={redoDrawing} className={cn(tbButton, "px-1.5")}>
+        <Redo2 className="size-[18px]" strokeWidth={1.5} />
+      </button>
+      <div className="ml-auto flex items-center gap-0.5 pl-2">
         <button
           type="button"
           onClick={() => setSearchOpen(true)}
@@ -316,116 +335,33 @@ export function ChartToolbar() {
           aria-label="Search (Ctrl K)"
           title="Search (Ctrl K)"
         >
-          <Search className="size-[18px]" />
+          <Search className="size-[18px]" strokeWidth={1.5} />
         </button>
-        <AccountSlot />
-      </div>
-    </div>
-  );
-}
-
-/** Phone top toolbar. */
-export function PhoneChartToolbar() {
-  const setSearchOpen = useTerminalStore((s) => s.setSearchOpen);
-  const venue = useTerminalStore((s) => s.venue);
-  const setVenue = useTerminalStore((s) => s.setVenue);
-  return (
-    <div className="flex h-11 min-w-0 shrink-0 items-center gap-0.5 border-b border-border bg-bg px-1">
-      <SymbolButton compact />
-      <ToolbarDivider />
-      <IntervalMenu triggerClassName="h-9 px-2" />
-      <ChartTypeMenu />
-      <IndicatorsButton compact />
-      <div className="ml-auto flex items-center">
-        <AlertButton compact />
+        <button type="button" aria-label="Settings" title="Settings" onClick={() => setSettingsOpen(true)} className={cn(tbButton, "px-1.5")}>
+          <Settings className="size-[18px]" strokeWidth={1.5} />
+        </button>
         <button
           type="button"
-          onClick={() => setSearchOpen(true)}
-          className={cn(tbButton, "h-9 px-2")}
-          aria-label="Search"
+          aria-label={fullscreen.on ? "Exit fullscreen" : "Fullscreen"}
+          title="Fullscreen"
+          onClick={fullscreen.toggle}
+          className={cn(tbButton, "px-1.5")}
         >
-          <Search className="size-[18px]" />
+          {fullscreen.on ? <Minimize className="size-[18px]" strokeWidth={1.5} /> : <Maximize className="size-[18px]" strokeWidth={1.5} />}
         </button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button type="button" className={cn(tbButton, "h-9 px-2")} aria-label="More">
-              <MoreHorizontal className="size-5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-48">
-            <DropdownMenuLabel className="text-[11px] tracking-wide text-muted uppercase">
-              Market
-            </DropdownMenuLabel>
-            {(["crypto", "stocks"] as const).map((id) => (
-              <DropdownMenuItem
-                key={id}
-                onSelect={() => setVenue(id)}
-                className={cn("justify-between", venue === id && "text-accent")}
-              >
-                {id === "crypto" ? "Crypto" : "Stocks"}
-                {venue === id && <Check className="size-4" />}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <button
+          type="button"
+          aria-label="Take a snapshot"
+          title="Take a snapshot"
+          onClick={() => window.dispatchEvent(new Event("aether:snapshot"))}
+          className={cn(tbButton, "px-1.5")}
+        >
+          <Camera className="size-[18px]" strokeWidth={1.5} />
+        </button>
+        <span className="mx-1.5"><VenueSwitch /></span>
+        <AccountSlot />
       </div>
+      <ChartSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
-  );
-}
-
-/** Headline price with pre/post-market line (phone chart screen). */
-export function QuoteStrip() {
-  const symbol = useTerminalStore((s) => s.symbol);
-  const quote = useTerminalStore((s) => s.quotes[s.symbol]);
-  const venue = useTerminalStore((s) => s.venue);
-  if (!quote) return <div className="h-8 shrink-0 border-b border-border bg-bg" />;
-  const opts = { currency: quote.currency, hint: quote.priceHint };
-  const up = quote.priceChange >= 0;
-  const state = quote.marketState;
-  const stateLabel =
-    venue === "crypto"
-      ? "24h"
-      : state === "regular"
-        ? "Market open"
-        : state === "pre" || state === "post" || state === "closed"
-          ? "At close"
-          : "";
-  return (
-    <div
-      className="flex h-8 shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-bg px-3 text-[13px] whitespace-nowrap tabular-nums"
-      aria-label={`${symbol} price`}
-    >
-      <span className="font-semibold text-strong">{formatPrice(quote.lastPrice, opts)}</span>
-      <span className={up ? "text-up" : "text-down"}>
-        {up ? "+" : "−"}
-        {formatPrice(Math.abs(quote.priceChange), opts)} ({formatPct(quote.priceChangePercent)})
-      </span>
-      {stateLabel && <span className="text-muted">{stateLabel}</span>}
-      {quote.extSession && quote.extPrice ? <ExtendedQuote quote={quote} /> : null}
-    </div>
-  );
-}
-
-export function ExtendedQuote({
-  quote,
-  className,
-}: {
-  quote: { extSession?: "pre" | "post"; extPrice?: number; extChange?: number; extChangePercent?: number; currency?: string; priceHint?: number };
-  className?: string;
-}) {
-  if (!quote.extSession || !quote.extPrice) return null;
-  const up = (quote.extChange ?? 0) >= 0;
-  const Icon = quote.extSession === "pre" ? Sun : Moon;
-  const opts = { currency: quote.currency, hint: quote.priceHint };
-  return (
-    <span className={cn("flex items-center gap-1.5", className)}>
-      <Icon
-        className={cn("size-3.5", quote.extSession === "pre" ? "text-warn" : "text-accent")}
-        aria-label={quote.extSession === "pre" ? "Pre-market" : "Post-market"}
-      />
-      <span className="text-muted">{quote.extSession === "pre" ? "Pre" : "Post"}</span>
-      <span className="text-fg">{formatPrice(quote.extPrice, opts)}</span>
-      <span className={up ? "text-up" : "text-down"}>{formatPct(quote.extChangePercent ?? 0)}</span>
-    </span>
   );
 }

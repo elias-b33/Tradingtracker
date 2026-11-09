@@ -49,6 +49,20 @@ describe("extended hours", () => {
     expect(tagged.map((c) => c.session)).toEqual(["pre", undefined, "post"]);
   });
 
+  it("tags bars when Yahoo's pre/post windows lag a day behind the regular ones", () => {
+    const prevDay = { start: period.pre.start - 86_400, end: period.pre.end - 86_400 };
+    const prevPost = { start: period.post.start - 86_400, end: period.post.end - 86_400 };
+    const tagged = tagExtendedSessions(
+      [
+        bar(period.pre.start + 3600, 1),
+        bar(period.regular.start + 60, 2),
+        bar(period.post.end - 17, 3),
+      ],
+      { pre: [prevDay], regular: [period.regular], post: [prevPost] },
+    );
+    expect(tagged.map((c) => c.session)).toEqual(["pre", undefined, "post"]);
+  });
+
   it("keeps the regular close as headline price outside regular hours", () => {
     const fallback: Quote = {
       symbol: "AAPL",

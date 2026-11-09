@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { toast } from "sonner";
@@ -14,16 +14,16 @@ import { useLayoutMode } from "@/hooks/use-is-desktop";
 import { useTerminalStore } from "@/lib/store";
 import { ChartView } from "./chart-view";
 import { Watchlist } from "./watchlist";
-import { OrderBook } from "./market-side";
 import { MobileNav } from "./mobile-nav";
-import { AccountCard } from "./account-slot";
 import { DeskSync } from "./desk-sync";
-import { NewsPanel } from "./news-panel";
 import { SymbolSearch } from "./symbol-search";
 import { BriefingSheet } from "./briefing-sheet";
-import { ChartToolbar, PhoneChartToolbar, QuoteStrip } from "./chart-toolbar";
-import { ChartBottomBar, PhoneBottomBar } from "./chart-bottom-bar";
-import { DrawingToolbar, PhoneDrawingButton } from "./drawing-toolbar";
+import { ChartToolbar } from "./chart-toolbar";
+import { FloatingDrawToolbar, PhoneChartToolbar } from "./phone-chart-toolbar";
+import { ExploreScreen, MenuScreen } from "./phone-screens";
+import { SymbolOverview } from "./symbol-overview";
+import { ChartBottomBar } from "./chart-bottom-bar";
+import { DrawingToolbar } from "./drawing-toolbar";
 import { RightPanelContent, RightRail } from "./right-panel";
 
 export function TerminalShell() {
@@ -106,11 +106,12 @@ export function TerminalShell() {
 
 function WideDesk({ tablet }: { tablet: boolean }) {
   const rightPanel = useTerminalStore((s) => s.rightPanel);
+  const drawingRail = useTerminalStore((s) => s.drawingRail);
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1 bg-gap">
       <ChartToolbar />
       <div className="flex min-h-0 flex-1 gap-1">
-        <DrawingToolbar />
+        {drawingRail && <DrawingToolbar />}
         <Group
           key={rightPanel ? "with-panel" : "chart-only"}
           orientation="horizontal"
@@ -145,41 +146,36 @@ function WideDesk({ tablet }: { tablet: boolean }) {
 }
 
 function PhoneDesk({ tab }: { tab: string }) {
+  const overviewOpen = useTerminalStore((s) => s.overviewOpen);
+  const [drawing, setDrawing] = useState(false);
   if (tab === "watch") {
     return (
-      <div className="desk-header min-h-0 flex-1">
-        <Watchlist />
+      <div className="desk-header flex min-h-0 flex-1 flex-col">
+        {overviewOpen ? <SymbolOverview /> : <Watchlist />}
       </div>
     );
   }
-  if (tab === "book") {
+  if (tab === "explore") {
     return (
-      <div className="desk-header min-h-0 flex-1">
-        <OrderBook />
+      <div className="desk-header flex min-h-0 flex-1 flex-col">
+        <ExploreScreen />
       </div>
     );
   }
-  if (tab === "more") {
+  if (tab === "menu") {
     return (
-      <div className="desk-header flex min-h-0 flex-1 flex-col bg-bg">
-        <div className="shrink-0 border-b border-border p-3">
-          <AccountCard />
-        </div>
-        <div className="min-h-0 flex-1">
-          <NewsPanel scope="desk" />
-        </div>
+      <div className="desk-header flex min-h-0 flex-1 flex-col">
+        <MenuScreen />
       </div>
     );
   }
   return (
     <div className="desk-header flex min-h-0 flex-1 flex-col bg-bg">
-      <PhoneChartToolbar />
-      <QuoteStrip />
       <div className="relative flex min-h-0 flex-1 flex-col">
         <ChartView />
-        <PhoneDrawingButton />
+        {drawing && <FloatingDrawToolbar onClose={() => setDrawing(false)} />}
       </div>
-      <PhoneBottomBar />
+      <PhoneChartToolbar drawing={drawing} onToggleDrawing={() => setDrawing((v) => !v)} />
     </div>
   );
 }

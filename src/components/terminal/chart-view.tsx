@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, ChevronsRight } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronsRight, Moon, Settings, Sun } from "lucide-react";
 import type {
   IChartApi,
   IPriceLine,
@@ -14,14 +14,16 @@ import { getKlines } from "@/lib/market/binance";
 import { getStockKlines } from "@/lib/market/stocks";
 import { intervalLegend, intervalSeconds, spanBarCount, spanStartMs } from "@/lib/market/spans";
 import { bollinger, ema, macd, rsi, sma, vwap } from "@/lib/market/indicators";
-import { formatCandleTime, formatPrice } from "@/lib/market/format";
+import { formatCrosshairTime, formatPrice } from "@/lib/market/format";
 import { connectKlineStream, type StreamConnectionStatus } from "@/lib/market/ws";
 import { CHART_FONT, INDICATOR_COLORS, theme } from "@/lib/theme";
 import type { Candle, IndicatorsState, StoredDrawing } from "@/lib/market/types";
-import { chartTimeZone, exchangeLabel, sourceLabel } from "@/lib/market/venue";
-import { pairLabel } from "@/lib/market/symbols";
+import { chartTimeZone, exchangeLabel } from "@/lib/market/venue";
+import { baseAsset, pairName } from "@/lib/market/symbols";
 import { useTerminalStore } from "@/lib/store";
-import { CountdownLabel, SessionBands } from "./session-bands";
+import { AxisLabel, SessionBands } from "./session-bands";
+import { CoinIcon } from "./coin-icon";
+import { ChartSettingsDialog } from "./chart-settings";
 import { useLayoutMode } from "@/hooks/use-is-desktop";
 import { cn } from "@/lib/utils";
 
@@ -147,6 +149,9 @@ export function ChartView() {
   const extendedHours = useTerminalStore((s) => s.extendedHours);
   const priceScaleMode = useTerminalStore((s) => s.priceScaleMode);
   const autoScale = useTerminalStore((s) => s.autoScale);
+  const showGrid = useTerminalStore((s) => s.showGrid);
+  const showCountdownPref = useTerminalStore((s) => s.showCountdown);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const addDrawing = useTerminalStore((s) => s.addDrawing);
   const setDrawingTool = useTerminalStore((s) => s.setDrawingTool);
   const setAutoScale = useTerminalStore((s) => s.setAutoScale);
@@ -162,8 +167,10 @@ export function ChartView() {
   const levelLinesRef = useRef<{ series: AnySeries; line: IPriceLine }[]>([]);
   const linesRef = useRef<IPriceLine[]>([]);
   const extLineRef = useRef<IPriceLine | null>(null);
+  const regularLineRef = useRef<IPriceLine | null>(null);
   const bandsRef = useRef(new SessionBands({ pre: theme.pre, post: theme.post }));
-  const countdownRef = useRef(new CountdownLabel());
+  const countdownRef = useRef(new AxisLabel());
+  const volumeLabelRef = useRef(new AxisLabel());
   const extraSeriesRef = useRef<AnySeries[]>([]);
   const fittedKey = useRef("");
   const candlesRef = useRef<Candle[]>([]);
@@ -178,10 +185,7 @@ export function ChartView() {
   const [scaleWidth, setScaleWidth] = useState(0);
   const [paneTops, setPaneTops] = useState<number[]>([]);
   const [legendOpen, setLegendOpen] = useState(true);
-  // Phones start with indicator rows collapsed, like TradingView mobile.
-  useEffect(() => {
-    if (phone) setLegendOpen(false);
-  }, [phone]);
+
 
   toolRef.current = drawingTool;
   pendingRef.current = pending;
@@ -404,7 +408,7 @@ export function ChartView() {
     if (!chart || !ready) return;
     chart.applyOptions({
       localization: {
-        timeFormatter: (time: number) => formatCandleTime(Number(time), interval, timeZone),
+        timeFormatter: (time: number) => formatCrosshairTime(Number(time), interval, timeZone),
       },
       timeScale: {
         secondsVisible: false,
@@ -425,6 +429,14 @@ export function ChartView() {
           : lc.PriceScaleMode.Normal;
     chart.priceScale("right").applyOptions({ mode, autoScale });
   }, [priceScaleMode, autoScale, ready]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !ready) return;
+    chart.applyOptions({
+      grid: { vertLines: { visible: showGrid }, horzLines: { visible: showGrid } },
+    });
+  }, [showGrid, ready]);
 
   // Leaving auto-scale when the user drags the price axis, like TradingView.
   useEffect(() => {
@@ -456,6 +468,7 @@ export function ChartView() {
         /* already gone */
       }
       extLineRef.current = null;
+      regularLineRef.current = null;
       levelLinesRef.current = [];
       linesRef.current = [];
     }
@@ -523,6 +536,7 @@ export function ChartView() {
     }
     mainRef.current.attachPrimitive(bandsRef.current);
     mainRef.current.attachPrimitive(countdownRef.current);
+    mainRef.current.attachPrimitive(volumeLabelRef.current);
   }, [chartType, priceMinMove, pricePrecision, ready]);
 
   const overlayData = useMemo(() => {
@@ -792,6 +806,38 @@ export function ChartView() {
     stocks,
   ]);
 
+  // Toolbar camera button: download a PNG of the chart.
+  useEffect(() => {
+    const onSnap = () => {
+      const chart = chartRef.current;
+      if (!chart) return;
+      chart.takeScreenshot().toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${symbol}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.png`;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+    };
+    window.addEventListener("aether:snapshot", onSnap);
+    return () => window.removeEventListener("aether:snapshot", onSnap);
+  }, [symbol]);
+
+  // "Go to date" from the bottom bar: centre the chart on the nearest bar.
+  const goToTime = useTerminalStore((s) => s.goToTime);
+  useEffect(() => {
+    const chart = chartRef.current;
+    const data = candlesRef.current;
+    if (!chart || !goToTime || !data.length) return;
+    let idx = data.findIndex((c) => c.time >= goToTime.at);
+    if (idx < 0) idx = data.length - 1;
+    const range = chart.timeScale().getVisibleLogicalRange();
+    const half = range ? Math.max(10, (range.to - range.from) / 2) : 60;
+    chart.timeScale().setVisibleLogicalRange({ from: idx - half, to: idx + half });
+  }, [goToTime]);
+
   // Pane tops for indicator legends.
   useEffect(() => {
     const chart = chartRef.current;
@@ -810,20 +856,28 @@ export function ChartView() {
     return () => window.cancelAnimationFrame(id);
   }, [ready, indicators.rsi, indicators.macd, candles.length, now]);
 
-  // Extended-hours price label when the chart is not showing extended bars.
+  // Extended hours on the price axis, TradingView style: an orange "Pre" /
+  // blue "Post" tag for the latest extended print, and the regular close keeps
+  // its own label even when the newest candle is an extended-hours bar.
+  const lastIsExtended = !!candles.at(-1)?.session;
   useEffect(() => {
     const main = mainRef.current;
     const lc = lcRef.current;
     if (!main || !lc || !ready) return;
-    if (extLineRef.current) {
+    for (const line of [extLineRef.current, regularLineRef.current]) {
+      if (!line) continue;
       try {
-        main.removePriceLine(extLineRef.current);
+        main.removePriceLine(line);
       } catch {
         /* */
       }
-      extLineRef.current = null;
     }
-    if (!stocks || hasExtended || !quote?.extPrice || !quote.extSession) return;
+    extLineRef.current = null;
+    regularLineRef.current = null;
+    const showExt = stocks && !!quote?.extPrice && !!quote.extSession;
+    // With an extended bar last, the series' own label would duplicate the Pre/Post tag.
+    main.applyOptions({ lastValueVisible: !(showExt && lastIsExtended), priceLineVisible: !(showExt && lastIsExtended) });
+    if (!showExt || !quote?.extPrice || !quote.extSession) return;
     const color = quote.extSession === "pre" ? theme.preLine : theme.postLine;
     extLineRef.current = main.createPriceLine({
       price: quote.extPrice,
@@ -835,7 +889,30 @@ export function ChartView() {
       axisLabelTextColor: "#ffffff",
       title: quote.extSession === "pre" ? "Pre" : "Post",
     });
-  }, [quote?.extPrice, quote?.extSession, stocks, hasExtended, ready, chartType, pricePrecision]);
+    if (lastIsExtended && quote.lastPrice > 0) {
+      const regularColor = quote.priceChange >= 0 ? theme.up : theme.down;
+      regularLineRef.current = main.createPriceLine({
+        price: quote.lastPrice,
+        color: regularColor,
+        lineWidth: 1,
+        lineStyle: lc.LineStyle.Dashed,
+        axisLabelVisible: true,
+        axisLabelColor: regularColor,
+        axisLabelTextColor: "#ffffff",
+        title: "",
+      });
+    }
+  }, [
+    quote?.extPrice,
+    quote?.extSession,
+    quote?.lastPrice,
+    quote?.priceChange,
+    stocks,
+    lastIsExtended,
+    ready,
+    chartType,
+    pricePrecision,
+  ]);
 
   // Drawings.
   useEffect(() => {
@@ -916,6 +993,7 @@ export function ChartView() {
   const nextClose = last ? last.time + step : 0;
   const remaining = nextClose - now / 1000;
   const showCountdown =
+    showCountdownPref &&
     !!last &&
     remaining > 0 &&
     remaining <= step &&
@@ -925,12 +1003,37 @@ export function ChartView() {
   const lastClose = last?.close;
   const lastUp = last ? last.close >= last.open : true;
   useEffect(() => {
+    const main = mainRef.current;
     countdownRef.current.set(
-      countdownText && lastClose !== undefined
-        ? { price: lastClose, text: countdownText, color: lastUp ? theme.up : theme.down }
+      countdownText && lastClose !== undefined && main
+        ? {
+            y: () => {
+              const y = main.priceToCoordinate(lastClose);
+              return y === null ? null : y + 18;
+            },
+            text: countdownText,
+            color: lastUp ? theme.up : theme.down,
+            key: `${countdownText}:${lastClose}:${lastUp}`,
+          }
         : null,
     );
   }, [countdownText, lastClose, lastUp, chartType, ready]);
+
+  // Volume value on the price axis at the volume bar's height.
+  const lastVolume = last?.volume;
+  useEffect(() => {
+    const vol = overlaysRef.current.vol;
+    volumeLabelRef.current.set(
+      indicators.volume && vol && lastVolume !== undefined
+        ? {
+            y: () => vol.priceToCoordinate(lastVolume),
+            text: formatVolume(lastVolume),
+            color: lastUp ? "rgba(8,153,129,0.85)" : "rgba(242,54,69,0.85)",
+            key: `${lastVolume}:${lastUp}:${candles.length}`,
+          }
+        : null,
+    );
+  }, [lastVolume, lastUp, indicators.volume, ready, chartType, candles.length]);
 
   // Legend values.
   const hoverIndex = useMemo(() => {
@@ -967,18 +1070,17 @@ export function ChartView() {
           maximumFractionDigits: pricePrecision,
         });
 
-  const feedDot = (() => {
+  const feedDot: SessionState = (() => {
     if (stocks) {
       const state = quote?.marketState;
-      if (state === "regular") return { color: "bg-up", label: "Market open" };
-      if (state === "pre") return { color: "bg-warn", label: "Pre-market" };
-      if (state === "post") return { color: "bg-accent", label: "Post-market" };
-      return { color: "bg-muted", label: "Market closed" };
+      if (state === "regular") return "open";
+      if (state === "pre") return "pre";
+      if (state === "post") return "post";
+      return "closed";
     }
-    if (streamStatus === "open") return { color: "bg-up", label: "Real-time" };
-    if (streamStatus === "connecting" || streamStatus === "reconnecting")
-      return { color: "bg-warn", label: "Connecting" };
-    return { color: "bg-down", label: "Offline" };
+    if (streamStatus === "open") return "open";
+    if (streamStatus === "connecting" || streamStatus === "reconnecting") return "connecting";
+    return "offline";
   })();
 
   const hint =
@@ -994,8 +1096,9 @@ export function ChartView() {
             : "Click to set the start point"
           : null;
 
-  const exchange = stocks ? exchangeLabel(quote?.exchange) : sourceLabel(quote?.source, venue);
-  const title = stocks ? quote?.shortName || symbol : pairLabel(symbol);
+  const exchange = stocks ? exchangeLabel(quote?.exchange) : "Binance";
+  const title = stocks ? (quote?.shortName || symbol).replace(/\.$/, "") : pairName(symbol);
+  const volumeLabel = stocks ? "Vol" : `Vol · ${baseAsset(symbol)}`;
 
   return (
     <div className="relative min-h-0 flex-1 bg-bg select-none">
@@ -1006,19 +1109,21 @@ export function ChartView() {
           className="pointer-events-none absolute top-1.5 left-2 z-10 max-w-[calc(100%-5rem)] text-[13px] leading-[20px] tabular-nums md:top-1.5 md:left-2"
           style={{ fontFamily: CHART_FONT }}
         >
-          <div className="flex flex-wrap items-center gap-x-1.5">
-            <span className="truncate text-[15px] text-fg md:text-[16px]">
-              {title}
-              <span className="text-muted"> · </span>
-              {intervalLegend(interval)}
-              {exchange ? (
-                <>
-                  <span className="text-muted"> · </span>
-                  {exchange}
-                </>
-              ) : null}
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+            <span className="pointer-events-none flex min-w-0 items-center gap-1.5 text-[16px] leading-6 text-fg">
+              <CoinIcon symbol={symbol} size={18} />
+              <span className="truncate">
+                {title}
+                {!phone && (
+                  <>
+                    <span> · </span>
+                    {intervalLegend(interval)}
+                    {exchange ? <span> · {exchange}</span> : null}
+                  </>
+                )}
+              </span>
             </span>
-            <span className={cn("size-1.5 shrink-0 rounded-full", feedDot.color)} title={feedDot.label} />
+            <SessionBadge state={feedDot} />
             {!phone && (
               <span className={cn("flex gap-x-1.5", up ? "text-up" : "text-down")}>
                 <span><span className="text-fg">O</span>{fmt(shown.open)}</span>
@@ -1033,8 +1138,24 @@ export function ChartView() {
               </span>
             )}
           </div>
-          {phone && (
-            <div className={cn("flex flex-wrap gap-x-1.5", up ? "text-up" : "text-down")}>
+          {phone && hoverTime === null && quote && (
+            <div
+              className={cn(
+                "flex flex-wrap gap-x-1.5 text-[15px]",
+                quote.priceChange >= 0 ? "text-[#22ab94]" : "text-down",
+              )}
+            >
+              {stocks && quote.marketState !== "regular" && <span className="text-fg">At close:</span>}
+              <span>{fmt(quote.lastPrice)}</span>
+              <span>
+                {quote.priceChange >= 0 ? "+" : "−"}
+                {fmt(Math.abs(quote.priceChange))} ({quote.priceChangePercent >= 0 ? "+" : "−"}
+                {Math.abs(quote.priceChangePercent).toFixed(2)}%)
+              </span>
+            </div>
+          )}
+          {phone && (hoverTime !== null || !quote) && (
+            <div className={cn("flex flex-wrap gap-x-1.5 text-[15px]", up ? "text-up" : "text-down")}>
               <span><span className="text-fg">C</span>{fmt(shown.close)}</span>
               <span>
                 {barChange >= 0 ? "+" : "−"}
@@ -1045,9 +1166,10 @@ export function ChartView() {
           )}
           {legendOpen && (
             <>
-              {indicators.volume && !phone && (
+              {indicators.volume && (
                 <div className="text-fg">
-                  Vol <span className={up ? "text-up" : "text-down"}>{formatVolume(shown.volume)}</span>
+                  {volumeLabel}{" "}
+                  <span className={up ? "text-up" : "text-down"}>{formatVolume(shown.volume)}</span>
                 </div>
               )}
               {OVERLAY_LEGEND.filter((item) => indicators[item.key]).map((item) => (
@@ -1096,12 +1218,24 @@ export function ChartView() {
         </PaneLegend>
       )}
 
+      <button
+        type="button"
+        aria-label="Chart settings"
+        title="Settings"
+        onClick={() => setSettingsOpen(true)}
+        className="absolute right-0 bottom-0 z-10 flex h-7 items-center justify-center text-fg hover:text-strong"
+        style={{ width: Math.max(scaleWidth, 28) }}
+      >
+        <Settings className="size-[18px]" strokeWidth={1.5} />
+      </button>
+      <ChartSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+
       {awayFromEdge && (
         <button
           type="button"
           aria-label="Scroll to the most recent bar"
           onClick={() => chartRef.current?.timeScale().scrollToRealTime()}
-          className="absolute bottom-9 z-10 flex size-7 items-center justify-center rounded-md border border-border bg-elevated text-fg shadow-border hover:bg-[#2a2a2a]"
+          className="absolute bottom-9 z-10 flex size-8 items-center justify-center rounded-md bg-[#2a2a2a] text-fg hover:bg-[#363636]"
           style={{ right: scaleWidth + 8 }}
         >
           <ChevronsRight className="size-4" />
@@ -1126,6 +1260,44 @@ export function ChartView() {
         </div>
       )}
     </div>
+  );
+}
+
+type SessionState = "open" | "pre" | "post" | "closed" | "connecting" | "offline";
+
+const SESSION_TITLES: Record<SessionState, string> = {
+  open: "Market open",
+  pre: "Pre-market",
+  post: "Post-market",
+  closed: "Market closed",
+  connecting: "Connecting to real-time data",
+  offline: "Real-time data offline",
+};
+
+/** TradingView's market-status chip next to the legend title. */
+function SessionBadge({ state }: { state: SessionState }) {
+  const title = SESSION_TITLES[state];
+  if (state === "pre" || state === "post") {
+    const Icon = state === "pre" ? Sun : Moon;
+    return (
+      <span
+        title={title}
+        aria-label={title}
+        className={cn(
+          "pointer-events-auto flex h-5 items-center rounded-full px-1.5",
+          state === "pre" ? "bg-warn/20 text-warn" : "bg-accent/25 text-[#6d8dff]",
+        )}
+      >
+        <Icon className="size-3" fill="currentColor" />
+      </span>
+    );
+  }
+  const dot =
+    state === "open" ? "bg-up" : state === "connecting" ? "bg-warn" : state === "offline" ? "bg-down" : "bg-muted";
+  return (
+    <span title={title} aria-label={title} className="pointer-events-auto flex size-5 items-center justify-center rounded-full bg-[#1e1e1e]">
+      <span className={cn("size-2 rounded-full", dot)} />
+    </span>
   );
 }
 

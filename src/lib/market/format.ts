@@ -10,6 +10,9 @@ export function formatPrice(price: number, opts?: { currency?: string; hint?: nu
   } else if (hint === 1) {
     min = 1;
     max = 1;
+  } else if (hint === 2) {
+    min = 2;
+    max = 2;
   } else if (hint && hint >= 3) {
     min = 2;
     max = hint;
@@ -60,6 +63,16 @@ export function formatDelta(n: number, opts?: { currency?: string; hint?: number
   return `${sign}${formatPrice(Math.abs(n), opts)}`;
 }
 
+/** Signed price change trimmed like TradingView: "+1.80", "+0.0045", "−0.000970". */
+export function formatChange(n: number, hint?: number): string {
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  const sign = n >= 0 ? "+" : "−";
+  if (hint !== undefined && hint >= 0 && hint <= 2) return `${sign}${formatPrice(abs, { hint })}`;
+  const digits = abs >= 1 ? 2 : abs >= 0.01 ? 4 : abs >= 0.0001 ? 6 : 8;
+  return `${sign}${abs.toLocaleString("en-US", { minimumFractionDigits: Math.min(2, digits), maximumFractionDigits: digits })}`;
+}
+
 export function formatQty(n: number): string {
   if (!Number.isFinite(n)) return "—";
   if (n >= 1000) return formatCompact(n);
@@ -106,6 +119,36 @@ export function formatCandleTime(seconds: number, interval: string, timeZone?: s
     hour12: false,
     ...tz,
   });
+}
+
+const crosshairFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** TradingView crosshair date, e.g. "Sun 08 Nov '26 14:45" (time omitted for D/W bars). */
+export function formatCrosshairTime(seconds: number, interval: string, timeZone = "UTC"): string {
+  let fmt = crosshairFormatters.get(timeZone);
+  if (!fmt) {
+    try {
+      fmt = new Intl.DateTimeFormat("en-GB", {
+        timeZone,
+        weekday: "short",
+        day: "2-digit",
+        month: "short",
+        year: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+    } catch {
+      fmt = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", weekday: "short", day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+    }
+    crosshairFormatters.set(timeZone, fmt);
+  }
+  const parts = Object.fromEntries(
+    fmt.formatToParts(new Date(seconds * 1000)).map((p) => [p.type, p.value]),
+  ) as Record<string, string>;
+  const date = `${parts.weekday} ${parts.day} ${parts.month} '${parts.year}`;
+  if (interval === "1d" || interval === "1w") return date;
+  return `${date} ${parts.hour === "24" ? "00" : parts.hour}:${parts.minute}`;
 }
 
 export function formatRelativeTime(ms: number): string {

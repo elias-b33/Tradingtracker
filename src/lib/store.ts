@@ -64,6 +64,15 @@ interface TerminalState extends DeskPayload {
   extendedHours: boolean;
   priceScaleMode: PriceScaleMode;
   autoScale: boolean;
+  showCountdown: boolean;
+  showGrid: boolean;
+  drawingRail: boolean;
+  setShowCountdown: (on: boolean) => void;
+  setShowGrid: (on: boolean) => void;
+  setDrawingRail: (on: boolean) => void;
+  /** One-shot request for the chart to jump to a date (unix seconds). */
+  goToTime: { at: number; nonce: number } | null;
+  setGoToTime: (at: number) => void;
   rightPanel: RightPanel | null;
   setRightPanel: (panel: RightPanel | null) => void;
   setExtendedHours: (on: boolean) => void;
@@ -78,6 +87,8 @@ interface TerminalState extends DeskPayload {
   addDrawing: (drawing: StoredDrawing) => void;
   clearDrawings: () => void;
   undoDrawing: () => void;
+  redoDrawing: () => void;
+  redoStack: Record<string, StoredDrawing[]>;
   addToWatchlist: (symbol: string) => void;
   removeFromWatchlist: (symbol: string) => void;
   patchQuote: (quote: Quote) => void;
@@ -98,6 +109,10 @@ interface TerminalState extends DeskPayload {
   setSearchOpen: (open: boolean) => void;
   setPhonePane: (pane: "plot" | "news") => void;
   setMobileTab: (tab: MobileTab) => void;
+  /** Phone: the symbol overview screen (TradingView app's details page). */
+  overviewOpen: boolean;
+  openOverview: (symbol: string) => void;
+  closeOverview: () => void;
   setSideTab: (tab: "news" | "book" | "tape" | "desk") => void;
   hydrateDesk: (desk: DeskPayload) => void;
   setCloudStatus: (cloudStatus: CloudStatus) => void;
@@ -168,7 +183,15 @@ export const useTerminalStore = create<TerminalState>()(
       extendedHours: true,
       priceScaleMode: "normal",
       autoScale: true,
+      showCountdown: true,
+      showGrid: true,
+      drawingRail: true,
+      setShowCountdown: (showCountdown) => set({ showCountdown }),
+      setShowGrid: (showGrid) => set({ showGrid }),
+      setDrawingRail: (drawingRail) => set({ drawingRail }),
       rightPanel: "watchlist",
+      goToTime: null,
+      setGoToTime: (at) => set({ goToTime: { at, nonce: Date.now() } }),
       setRightPanel: (rightPanel) => set({ rightPanel }),
       setExtendedHours: (extendedHours) => set({ extendedHours }),
       setPriceScaleMode: (priceScaleMode) => set({ priceScaleMode }),
@@ -181,6 +204,7 @@ export const useTerminalStore = create<TerminalState>()(
           return {
             symbol,
             mobileTab: "chart",
+            overviewOpen: false,
             sideTab: "news",
             watchlist,
             desks: { ...s.desks, [s.venue]: { ...s.desks[s.venue], symbol, watchlist } },
@@ -204,7 +228,7 @@ export const useTerminalStore = create<TerminalState>()(
             watchlist: next.watchlist.length ? next.watchlist : [...next.watchlist],
             span: next.span,
             interval: next.interval,
-            mobileTab: s.mobileTab === "book" && venue === "stocks" ? "watch" : s.mobileTab,
+            overviewOpen: false,
             sideTab: venue === "stocks" && s.sideTab === "tape" ? "news" : s.sideTab,
             rightPanel: venue === "stocks" && s.rightPanel === "tape" ? "watchlist" : s.rightPanel,
           };
@@ -231,14 +255,34 @@ export const useTerminalStore = create<TerminalState>()(
       addDrawing: (drawing) =>
         set((s) => {
           const current = s.drawings[s.symbol] ?? [];
-          return { drawings: { ...s.drawings, [s.symbol]: [...current, drawing] } };
+          return {
+            drawings: { ...s.drawings, [s.symbol]: [...current, drawing] },
+            redoStack: { ...s.redoStack, [s.symbol]: [] },
+          };
         }),
       clearDrawings: () =>
         set((s) => ({ drawings: { ...s.drawings, [s.symbol]: [] } })),
+      redoStack: {},
       undoDrawing: () =>
-        set((s) => ({
-          drawings: { ...s.drawings, [s.symbol]: (s.drawings[s.symbol] ?? []).slice(0, -1) },
-        })),
+        set((s) => {
+          const list = s.drawings[s.symbol] ?? [];
+          const last = list[list.length - 1];
+          if (!last) return s;
+          return {
+            drawings: { ...s.drawings, [s.symbol]: list.slice(0, -1) },
+            redoStack: { ...s.redoStack, [s.symbol]: [...(s.redoStack[s.symbol] ?? []), last] },
+          };
+        }),
+      redoDrawing: () =>
+        set((s) => {
+          const stack = s.redoStack[s.symbol] ?? [];
+          const next = stack[stack.length - 1];
+          if (!next) return s;
+          return {
+            drawings: { ...s.drawings, [s.symbol]: [...(s.drawings[s.symbol] ?? []), next] },
+            redoStack: { ...s.redoStack, [s.symbol]: stack.slice(0, -1) },
+          };
+        }),
       addToWatchlist: (symbol) =>
         set((s) => {
           if (s.watchlist.includes(symbol) || s.watchlist.length >= 80) return s;
@@ -398,7 +442,15 @@ export const useTerminalStore = create<TerminalState>()(
       setFeedDegraded: (feedDegraded) => set({ feedDegraded }),
       setSearchOpen: (searchOpen) => set({ searchOpen }),
       setPhonePane: (phonePane) => set({ phonePane }),
-      setMobileTab: (mobileTab) => set({ mobileTab }),
+      setMobileTab: (mobileTab) => set({ mobileTab, overviewOpen: false }),
+      overviewOpen: false,
+      openOverview: (symbol) =>
+        set((s) => ({
+          symbol,
+          overviewOpen: true,
+          desks: { ...s.desks, [s.venue]: { ...s.desks[s.venue], symbol } },
+        })),
+      closeOverview: () => set({ overviewOpen: false }),
       setSideTab: (sideTab) => set({ sideTab }),
       hydrateDesk: (desk) =>
         set((s) => {
@@ -494,6 +546,9 @@ export const useTerminalStore = create<TerminalState>()(
         extendedHours: s.extendedHours,
         priceScaleMode: s.priceScaleMode,
         rightPanel: s.rightPanel,
+        showCountdown: s.showCountdown,
+        showGrid: s.showGrid,
+        drawingRail: s.drawingRail,
       }),
     },
   ),

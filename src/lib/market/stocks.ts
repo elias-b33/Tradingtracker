@@ -199,21 +199,32 @@ export function extendedQuoteFields(
   };
 }
 
-/** Tag intraday candles that fall outside the listing's regular session. */
+/**
+ * Tag intraday candles that fall outside the listing's regular session.
+ * Yahoo's multi-day `tradingPeriods` lists pre/post windows a day behind the
+ * regular ones, so explicit windows are used when present and otherwise a bar
+ * is classified by its distance from the nearest regular session.
+ */
 export function tagExtendedSessions(
   candles: Candle[],
   periods: { pre?: TradingWindow[]; regular?: TradingWindow[]; post?: TradingWindow[] },
 ): Candle[] {
-  const regular = periods.regular ?? [];
+  const regular = [...(periods.regular ?? [])].sort((a, b) => a.start - b.start);
   if (!regular.length) return candles;
   const pre = periods.pre ?? [];
   const post = periods.post ?? [];
   const within = (list: TradingWindow[], t: number) => list.some((w) => t >= w.start && t < w.end);
+  const PRE_SPAN = 6 * 3600;
+  const POST_SPAN = 4.5 * 3600;
   return candles.map((c) => {
-    if (within(regular, c.time)) return c;
-    if (within(pre, c.time)) return { ...c, session: "pre" as const };
-    if (within(post, c.time)) return { ...c, session: "post" as const };
-    // Bars between windows (e.g. a 60m bar straddling the open) count as regular.
+    const t = c.time;
+    if (within(regular, t)) return c;
+    if (within(pre, t)) return { ...c, session: "pre" as const };
+    if (within(post, t)) return { ...c, session: "post" as const };
+    for (const w of regular) {
+      if (t < w.start && w.start - t <= PRE_SPAN) return { ...c, session: "pre" as const };
+      if (t >= w.end && t - w.end < POST_SPAN) return { ...c, session: "post" as const };
+    }
     return c;
   });
 }
@@ -447,6 +458,7 @@ function parseChart(json: unknown): YahooChartData {
     | {
         exchangeTimezoneName?: string;
         tradingPeriods?: Record<string, TradingWindow[][] | TradingWindow[]>;
+        currentTradingPeriod?: { pre?: TradingWindow; regular?: TradingWindow; post?: TradingWindow };
       }
     | undefined;
   const timeZone = meta?.exchangeTimezoneName || "UTC";
@@ -471,11 +483,13 @@ function parseChart(json: unknown): YahooChartData {
   if (tp && !Array.isArray(tp) && tp.pre && tp.post) {
     const flat = (v?: TradingWindow[][] | TradingWindow[]) =>
       (v ?? []).flat() as TradingWindow[];
+    const cur = meta?.currentTradingPeriod;
+    const add = (list: TradingWindow[], w?: TradingWindow) => (w ? [...list, w] : list);
     return {
       candles: tagExtendedSessions(candles, {
-        pre: flat(tp.pre),
-        regular: flat(tp.regular),
-        post: flat(tp.post),
+        pre: add(flat(tp.pre), cur?.pre),
+        regular: add(flat(tp.regular), cur?.regular),
+        post: add(flat(tp.post), cur?.post),
       }),
       timeZone,
     };

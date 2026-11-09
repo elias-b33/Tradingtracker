@@ -80,42 +80,41 @@ export class SessionBands implements ISeriesPrimitive<Time> {
   }
 }
 
-type CountdownState = { price: number; text: string; color: string } | null;
+type AxisLabelState = {
+  /** Pixel y on the price axis, evaluated on every redraw. */
+  y: () => number | null;
+  text: string;
+  color: string;
+  key: string;
+} | null;
 
-/** Bar-close countdown drawn as a second price-axis label under the last price. */
-export class CountdownLabel implements ISeriesPrimitive<Time> {
-  private state: CountdownState = null;
-  private series: SeriesAttachedParameter<Time>["series"] | null = null;
+/**
+ * Extra price-axis label (bar-close countdown, volume value) drawn with the
+ * axis' own label style, like TradingView's secondary axis labels.
+ */
+export class AxisLabel implements ISeriesPrimitive<Time> {
+  private state: AxisLabelState = null;
   private requestUpdate: (() => void) | null = null;
   private readonly axisView = {
-    coordinate: () => {
-      if (!this.state || !this.series) return -100;
-      const y = this.series.priceToCoordinate(this.state.price);
-      return y === null ? -100 : y + this.offset;
-    },
+    coordinate: () => this.state?.y() ?? -100,
     text: () => this.state?.text ?? "",
     textColor: () => "#ffffff",
     backColor: () => this.state?.color ?? "transparent",
-    visible: () => !!this.state,
+    visible: () => !!this.state && this.state.y() !== null,
     tickVisible: () => false,
   };
   private readonly views = [this.axisView];
 
-  constructor(private readonly offset = 18) {}
-
   attached(param: SeriesAttachedParameter<Time>) {
-    this.series = param.series;
     this.requestUpdate = param.requestUpdate;
   }
 
   detached() {
-    this.series = null;
     this.requestUpdate = null;
   }
 
-  set(state: CountdownState) {
-    const prev = this.state;
-    if (prev?.text === state?.text && prev?.price === state?.price && prev?.color === state?.color) return;
+  set(state: AxisLabelState) {
+    if (this.state?.key === state?.key && (this.state === null) === (state === null)) return;
     this.state = state;
     this.requestUpdate?.();
   }
