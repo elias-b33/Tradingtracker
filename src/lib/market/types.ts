@@ -37,7 +37,7 @@ export type MarketSession = "pre" | "post";
 
 export type DrawingTool = "cursor" | "hline" | "trend" | "fib";
 
-export type MobileTab = "watch" | "chart" | "book" | "more";
+export type MobileTab = "watch" | "chart" | "explore" | "menu";
 
 export interface Candle {
   time: number;
@@ -149,8 +149,8 @@ export interface IndicatorsState {
 }
 
 export const DEFAULT_INDICATORS: IndicatorsState = {
-  sma20: true,
-  sma50: true,
+  sma20: false,
+  sma50: false,
   sma200: false,
   ema12: false,
   ema26: false,

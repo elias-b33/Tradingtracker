@@ -86,8 +86,9 @@ export function spanBarCount(span: SpanId, interval: IntervalId, now = Date.now(
   return Math.ceil((now - start) / 1000 / intervalSeconds(interval));
 }
 
-/** Interval as written in the chart legend ("5m", "1h", "1D", "1W"). */
+/** Interval as TradingView writes it in the legend: minutes as bare numbers ("5", "15"), then "1h", "4h", "1D", "1W". */
 export function intervalLegend(interval: string): string {
   const label = INTERVALS.find((i) => i.id === interval)?.label ?? interval;
+  if (label.endsWith("m")) return label.slice(0, -1);
   return label === "D" ? "1D" : label === "W" ? "1W" : label;
 }

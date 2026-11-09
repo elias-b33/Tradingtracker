@@ -118,6 +118,20 @@ export function assetName(symbol: string): string {
   return ASSET_META[base]?.name ?? STOCK_META[symbol]?.name ?? STOCK_META[base]?.name ?? base;
 }
 
+const QUOTE_NAMES: Record<string, string> = {
+  USDT: "TetherUS",
+  USDC: "USD Coin",
+  FDUSD: "First Digital USD",
+  BUSD: "Binance USD",
+};
+
+/** TradingView-style description, e.g. "Bitcoin / TetherUS". */
+export function pairName(symbol: string): string {
+  const quote = quoteAsset(symbol);
+  if (!quote) return assetName(symbol);
+  return `${assetName(symbol)} / ${QUOTE_NAMES[quote] ?? quote}`;
+}
+
 export function pairLabel(symbol: string): string {
   const quote = quoteAsset(symbol);
   return quote ? `${baseAsset(symbol)}/${quote}` : symbol;

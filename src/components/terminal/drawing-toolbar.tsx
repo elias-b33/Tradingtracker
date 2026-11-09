@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { Pencil, Trash2, Undo2, X } from "lucide-react";
+import { Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DrawingTool } from "@/lib/market/types";
 import { useTerminalStore } from "@/lib/store";
@@ -63,72 +62,6 @@ export function DrawingToolbar() {
       >
         <Trash2 className="size-5" strokeWidth={1.5} />
       </button>
-    </div>
-  );
-}
-
-/** Floating drawing palette for phones. */
-export function PhoneDrawingButton() {
-  const { drawingTool, setDrawingTool, clearDrawings, undoDrawing, count } = useTools();
-  const [open, setOpen] = useState(false);
-  const active = drawingTool !== "cursor";
-  return (
-    <div className="absolute bottom-12 left-2 z-20 flex flex-col-reverse items-center gap-1">
-      <button
-        type="button"
-        aria-label={open ? "Close drawing tools" : "Drawing tools"}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "flex size-11 items-center justify-center rounded-full border border-border bg-elevated text-fg shadow-border",
-          (open || active) && "text-accent",
-        )}
-      >
-        {open ? <X className="size-5" /> : <Pencil className="size-5" strokeWidth={1.5} />}
-      </button>
-      {open && (
-        <div className="flex flex-col-reverse items-center gap-0.5 rounded-lg border border-border bg-elevated p-1 shadow-border">
-          {TOOLS.map((tool) => (
-            <button
-              key={tool.id}
-              type="button"
-              aria-label={tool.label}
-              aria-pressed={drawingTool === tool.id}
-              onClick={() => {
-                setDrawingTool(tool.id);
-                if (tool.id !== "cursor") setOpen(false);
-              }}
-              className={cn(
-                "flex size-11 items-center justify-center rounded-md text-fg",
-                drawingTool === tool.id && "bg-hover text-accent",
-              )}
-            >
-              <tool.icon className="size-7" />
-            </button>
-          ))}
-          <button
-            type="button"
-            aria-label="Undo last drawing"
-            disabled={!count}
-            onClick={undoDrawing}
-            className="flex size-11 items-center justify-center rounded-md text-fg disabled:opacity-30"
-          >
-            <Undo2 className="size-5" strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            aria-label="Remove all drawings"
-            disabled={!count}
-            onClick={() => {
-              clearDrawings();
-              setOpen(false);
-            }}
-            className="flex size-11 items-center justify-center rounded-md text-fg disabled:opacity-30"
-          >
-            <Trash2 className="size-5" strokeWidth={1.5} />
-          </button>
-        </div>
-      )}
     </div>
   );
 }
